@@ -1,0 +1,8 @@
+{
+  "name": "video-editor",
+  "version": "0.1.0",
+  "description": "Edit raw talking-head recordings into a publishable video: picks the good takes, cuts the retakes, captions it, and makes a b-roll/motion-graphics version beside the plain one. Runs locally with ffmpeg.",
+  "author": { "name": "Marcel Jora" },
+  "license": "MIT",
+  "keywords": ["video", "ffmpeg", "youtube", "shorts", "captions", "remotion"]
+}

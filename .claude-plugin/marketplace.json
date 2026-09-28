@@ -1,0 +1,14 @@
+{
+  "name": "video-editor",
+  "owner": {
+    "name": "Marcel Jora"
+  },
+  "description": "Local, AI-driven editing for talking-head videos.",
+  "plugins": [
+    {
+      "name": "video-editor",
+      "source": "./",
+      "description": "Edit raw talking-head recordings into a publishable video, locally."
+    }
+  ]
+}

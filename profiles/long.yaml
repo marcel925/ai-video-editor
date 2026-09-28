@@ -1,0 +1,54 @@
+# Long form: 16:9 tutorial / talking head for YouTube.
+name: long
+description: Horizontal tutorial video, chapters, light captions, gentle pacing.
+
+video:
+  width: 1920
+  height: 1080
+  fps: 30
+  fit: fit              # letterbox rather than crop - never lose the frame
+  pad_color: black
+  punch_in: 0.06          # slight zoom on alternate clips, as a fraction
+  punch_in_min_gap: 22     # seconds before the frame size may change again
+  crf: 19
+  fade_in: 0.4
+  fade_out: 0.6
+
+audio:
+  cut_padding: 0.14     # breathing room kept around each cut, seconds
+  snap_reach: 1.2       # how far to hunt for a pause to cut inside
+  max_pause: 0.55         # longest silence left inside a cut, seconds
+  min_pause_saving: 0.20  # don't bother splitting to save less than this
+  silence_noise_db: -32
+  silence_min_duration: 0.20
+  denoise: false
+  loudnorm: true
+  loudness_target: -14  # YouTube normalises to about this
+  true_peak: -1.5
+  loudness_range: 11
+
+captions:
+  style: subtle
+  burn_in: false        # clean frame: upload build/captions.srt to YouTube
+                        # instead. Viewer-controlled, indexed for search,
+                        # auto-translatable, and fixable after publishing
+                        # without a re-encode - none of which burn-in gives
+                        # you. Set true only when the file goes somewhere
+                        # that has no subtitle track of its own.
+
+preview:
+  scale: 0.5
+
+editorial:
+  target_duration: null
+  keep_pauses: true         # thinking pauses read as natural in long form
+  filler_removal: light     # drop stammers and false starts, keep the rhythm
+  chapters: true
+  hook_seconds: 15
+
+edited:                     # the edit_video_plus version
+  off_face: [20, 25]        # % of runtime off the talking head (edit budget)
+  max_hold: 12              # longest stretch with no visual change, seconds
+  auto_zoom:                # alternate framing at the cut's joins
+    scale: 1.06
+    min_hold: 10

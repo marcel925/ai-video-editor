@@ -1,0 +1,45 @@
+.venv/
+__pycache__/
+
+# API keys live here - never commit it. .env.example is the template.
+.env
+.env.*
+!.env.example
+
+# Per-user Claude Code settings
+.claude/settings.local.json
+
+# Local-only helpers
+resume-session.sh
+*.pyc
+.DS_Store
+
+# Footage and renders. Never commit media — raw takes are gigabytes, and
+# every generated file rebuilds from raw_videos/ in a couple of minutes.
+*.mov
+*.mp4
+*.m4v
+*.mkv
+*.avi
+*.mts
+*.webm
+*.MOV
+*.MP4
+
+# Extracted and intermediate audio
+*.wav
+*.aiff
+*.aif
+*.mp3
+*.m4a
+*.aac
+!tools/sfx/*.wav
+
+# Your projects. Footage, screenshots, logos and transcripts are personal;
+# only videos/README.md is part of the repo.
+videos/*
+!videos/README.md
+
+# Remotion
+motion/node_modules/
+

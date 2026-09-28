@@ -1,0 +1,49 @@
+# Short form: 9:16 vertical for Shorts / Reels / TikTok.
+name: short
+description: Vertical, under a minute, hard hook, burned-in captions.
+
+video:
+  width: 1080
+  height: 1920
+  fps: 30
+  fit: fill             # crop to fill - use tools/reframe.py to place the crop
+  pad_color: black
+  punch_in: 0.05          # slight zoom on alternate clips, as a fraction
+  punch_in_min_gap: 9     # seconds before the frame size may change again
+  crf: 20
+  fade_in: 0.0          # no fade: the first frame has to be the hook
+  fade_out: 0.3
+
+audio:
+  cut_padding: 0.08     # tighter - short form tolerates no dead air
+  snap_reach: 0.9
+  max_pause: 0.35         # longest silence left inside a cut, seconds
+  min_pause_saving: 0.20  # don't bother splitting to save less than this
+  silence_noise_db: -32
+  silence_min_duration: 0.18
+  denoise: false
+  loudnorm: true
+  loudness_target: -14
+  true_peak: -1.5
+  loudness_range: 9
+
+captions:
+  style: karaoke
+  burn_in: true         # most viewers watch these muted
+
+preview:
+  scale: 0.5
+
+editorial:
+  target_duration: 55       # seconds; hard ceiling before the platform cuts it
+  keep_pauses: false
+  filler_removal: aggressive
+  chapters: false
+  hook_seconds: 2
+
+edited:                     # the edit_video_plus version
+  off_face: [35, 45]        # % of runtime off the talking head (edit budget)
+  max_hold: 4               # longest stretch with no visual change, seconds
+  auto_zoom:                # alternate framing at the cut's joins
+    scale: 1.08
+    min_hold: 4

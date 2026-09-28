@@ -1,0 +1,16 @@
+{
+  "name": "video-editor",
+  "private": true,
+  "scripts": {
+    "final": "tools/build.sh final both",
+    "final:plain": "tools/build.sh final plain",
+    "final:edited": "tools/build.sh final edited",
+    "preview": "tools/build.sh preview both",
+    "preview:plain": "tools/build.sh preview plain",
+    "preview:edited": "tools/build.sh preview edited",
+    "final:all": "tools/build.sh all final both",
+    "preview:all": "tools/build.sh all preview both",
+    "doctor": ".venv/bin/python tools/doctor.py",
+    "studio": "npm --prefix motion run studio"
+  }
+}
