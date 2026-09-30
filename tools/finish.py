@@ -519,18 +519,23 @@ def sdr_source(source: Path, quality: str) -> Path:
     if not {"zscale", "tonemap"} <= ffmpeg_filters():
         info("this ffmpeg has no zscale/tonemap - HDR colours may look washed out")
         return source
-    out = source.with_name(f"{source.stem}_sdr.mp4")
-    if out.exists() and out.stat().st_mtime >= source.stat().st_mtime:
-        return out
-    info(f"tone-mapping the {trc} cut to SDR")
-    tonemap = (f"zscale=tin={trc}:min=bt2020nc:pin=bt2020:t=linear:npl=100,"
+    # npl=203 is HLG reference white (BT.2408); 100 overdrives skin to orange
+    tonemap = (f"zscale=tin={trc}:min=bt2020nc:pin=bt2020:t=linear:npl=203,"
                "format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,"
                "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
+    out = source.with_name(f"{source.stem}_sdr.mp4")
+    # the filter is stamped into the copy, so a settings change re-renders it
+    if (out.exists() and out.stat().st_mtime >= source.stat().st_mtime
+            and ffprobe(out).get("format", {}).get("tags", {})
+            .get("comment") == tonemap):
+        return out
+    info(f"tone-mapping the {trc} cut to SDR")
     encode = (["-c:v", "libx264", "-preset", "medium", "-crf", "14"]
               if quality == "final" else
               preview_encoder("8000k"))
     run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
-         "-vf", tonemap, *encode, *SDR_TAGS, "-c:a", "copy", str(out)])
+         "-vf", tonemap, *encode, *SDR_TAGS, "-metadata", f"comment={tonemap}",
+         "-c:a", "copy", str(out)])
     return out
 
 
