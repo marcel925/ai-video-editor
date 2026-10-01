@@ -92,6 +92,12 @@ $PY $T/captions.py $P
 $PY $T/finish.py   $P --quality final
 ```
 
+**Then run `/youtube_metadata <project_name>` straight away**, without
+asking, when this is the project's last final: the user asked for plain
+only, or `final_edited.mp4` already exists. Otherwise the edited version
+comes next and `edit_video_plus` runs it after its own final, so both
+copies land in `upload/`. Tell the user once it is done.
+
 Ingest and transcription are cached; a re-render only re-encodes the clips
 that changed.
 
@@ -216,3 +222,5 @@ turn their answers into `$P/build/overlays.json` and re-run `finish.py` only.
 - Finish every edit with overlay proposals, then make the edited version
   with `edit_video_plus`. It never replaces the plain files.
 - Never reword what the speaker actually said.
+- Every final render ends with `/youtube_metadata`, run automatically. A
+  project is not finished until its `upload/` folder is current.

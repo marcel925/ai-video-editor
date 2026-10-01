@@ -129,8 +129,11 @@ npm run final:all                   # every edited project in videos/, one by on
 version. Run projects one after another rather than in parallel: each render
 already uses most of the CPU.
 
-Then `/youtube_metadata my_topic_long` (or `all`) writes
-an `upload/` folder with everything YouTube Studio needs: `youtube-metadata.md`
+When `/edit_video` or `/edit_video_plus` renders a final, it runs
+`/youtube_metadata` automatically, so the project's `upload/` folder is
+ready as soon as the final is. After an `npm run final` (which runs without
+Claude), run `/youtube_metadata my_topic_long` (or `all`) yourself to
+refresh it. It writes an `upload/` folder with everything YouTube Studio needs: `youtube-metadata.md`
 (titles, description, chapters, tags, credits), title-named copies of the
 finals and `captions.srt`.
 

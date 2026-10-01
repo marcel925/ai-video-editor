@@ -58,7 +58,9 @@ Everything else (`raw_audios/`, `transcripts/`, `build/`, the finished
 `final.mp4`) is generated for you and is ignored by git, because all of it is
 reproducible from `raw_videos/`.
 
-When the finals are done, `/youtube_metadata my_topic_long` fills the
-project's `upload/` folder with everything YouTube Studio needs:
+When `/edit_video` or `/edit_video_plus` renders a final it runs
+`/youtube_metadata` for you,
+which fills the project's `upload/` folder with everything YouTube Studio needs:
 `youtube-metadata.md` (title, description, chapters, tags), title-named
-copies of the finals and `captions.srt`.
+copies of the finals and `captions.srt`. After re-rendering with
+`npm run final`, run `/youtube_metadata my_topic_long` yourself to refresh it.

@@ -1,6 +1,6 @@
 ---
 name: youtube_metadata
-description: Write YouTube metadata for a finished video - title options, description, chapters, tags, settings, pinned comment and stock credits - into <project>/upload/youtube-metadata.md, beside title-named copies of the finals and captions.srt, so the upload/ folder holds everything needed in YouTube Studio. Use after the finals are rendered, or when the user asks for titles, descriptions, chapters, tags, "YouTube metadata" or files to upload. Accepts one project name or "all".
+description: Write YouTube metadata for a finished video - title options, description, chapters, tags, settings, pinned comment and stock credits - into <project>/upload/youtube-metadata.md, beside title-named copies of the finals and captions.srt, so the upload/ folder holds everything needed in YouTube Studio. Runs automatically at the end of every final render from edit_video / edit_video_plus; also use when the user asks for titles, descriptions, chapters, tags, "YouTube metadata" or files to upload. Accepts one project name or "all".
 ---
 
 # youtube_metadata
@@ -29,6 +29,10 @@ PY="${CLAUDE_PLUGIN_DATA}/venv/bin/python"; T="${CLAUDE_PLUGIN_ROOT}/tools"
 ```
 
 (or `PY=.venv/bin/python; T=tools` in a clone). `$P` is `videos/<project_name>`.
+
+When `edit_video` or `edit_video_plus` calls this after a final render, go
+straight through without asking; only stop for a question the rules below
+require (an existing, user-edited `youtube-metadata.md`).
 
 ## Preconditions
 
