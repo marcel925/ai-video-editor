@@ -106,6 +106,23 @@ def save_json(path: Path, obj) -> None:
         json.dump(obj, fh, indent=2)
 
 
+def load_sources(paths: dict) -> dict:
+    """build/sources.json, with every take's path checked.
+
+    The manifest stores absolute paths, so moving or renaming a project folder
+    leaves them pointing at nothing. A missing file is looked up again under
+    the project's own raw_videos/ and raw_audios/ before anything fails."""
+    manifest = load_json(paths["build"] / "sources.json")
+    for src in manifest["sources"]:
+        for key, folder, name in (("video", "raw_videos", src["name"]),
+                                  ("audio", "raw_audios", f"{src['stem']}.wav")):
+            if src.get(key) and not Path(src[key]).exists():
+                moved = paths[folder] / name
+                if moved.exists():
+                    src[key] = str(moved)
+    return manifest
+
+
 def digest(*parts) -> str:
     h = hashlib.sha1()
     for p in parts:

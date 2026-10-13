@@ -17,8 +17,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from common import (die, digest, fmt_ts, info, load_json, load_profile, preview_encoder,
-                    project_paths, run, save_json)
+from common import (die, digest, fmt_ts, info, load_json, load_profile, load_sources,
+                    preview_encoder, project_paths, run, save_json)
 
 DECLICK = 0.02          # audio fade at each cut boundary, seconds
 
@@ -125,6 +125,43 @@ def excise(start: float, end: float, drops: list) -> list[tuple[float, float]]:
     return [(a, b) for a, b in spans if b - a >= 0.08]
 
 
+DROP_SNAP = 0.2          # how far a drop edge may move to reach a pause
+
+
+def snap_drops(drops: list, silences: list, label: str) -> list[tuple[float, float]]:
+    """Move each drop edge that sits in running speech into the nearest pause.
+
+    A drop range read off the word timings inherits their drift: an edge a
+    tenth of a second late keeps the first syllable of the word it meant to
+    remove, and the viewer hears "so while... while she's so kind". The pause
+    map is measured from the audio, so an edge within DROP_SNAP of a pause is
+    moved just inside it. One further away is left alone and reported:
+    listen.py will say whether it is heard."""
+    pauses = coalesce(silences)
+    out = []
+    for raw in drops:
+        edges = []
+        for t in (float(raw[0]), float(raw[1])):
+            if any(a <= t <= b for a, b in pauses):
+                edges.append(t)
+                continue
+            near = min(pauses, key=lambda p: min(abs(t - p[0]), abs(t - p[1])),
+                       default=None)
+            gap = min(abs(t - near[0]), abs(t - near[1])) if near else 1e9
+            if gap > DROP_SNAP:
+                info(f"  {label}: drop edge {t:.2f} is in running speech, "
+                     f"{gap:.2f}s from a pause - check it with listen.py")
+                edges.append(t)
+                continue
+            a, b = near
+            moved = min(max(t, a + 0.04), b - 0.04) if b - a > 0.08 else (a + b) / 2
+            info(f"  {label}: drop edge {t:.2f} -> {moved:.2f} (into the pause)")
+            edges.append(round(moved, 3))
+        if edges[1] > edges[0]:
+            out.append((edges[0], edges[1]))
+    return out
+
+
 def compress_pauses(start: float, end: float, silences: list,
                     max_pause: float, min_saving: float = 0.4
                     ) -> list[tuple[float, float]]:
@@ -218,6 +255,7 @@ def resolve_cuts(edl: dict, segments: list[dict], sources: list[dict],
         else:
             die(f"cut #{n} has neither 'segments' nor 'source'")
 
+        drops = snap_drops(cut.get("drop", []), source["silences"], f"cut #{n}")
         for span_n, (ids, raw_start, raw_end) in enumerate(spans):
             start = snap_start(source["silences"], raw_start, pad, reach)
             end = snap_end(source["silences"], raw_end, pad, reach,
@@ -232,7 +270,7 @@ def resolve_cuts(edl: dict, segments: list[dict], sources: list[dict],
                 die(f"cut #{n} resolves to {end - start:.2f}s - check its "
                     f"segment ids")
 
-            pieces = excise(start, end, cut.get("drop", []))
+            pieces = excise(start, end, drops)
             if not pieces:
                 die(f"cut #{n} has nothing left after its drop ranges")
             excised += (end - start) - sum(b - a for a, b in pieces)
@@ -245,8 +283,11 @@ def resolve_cuts(edl: dict, segments: list[dict], sources: list[dict],
                                         min_saving)):
                     # anything after the first is held apart on purpose, so
                     # merge_adjacent must not fuse it back together
+                    # the start is exact only while it is still the drop's
+                    # edge; pause trimming may have moved it into speech
                     parts.append(part[:2] + (part[2] or piece_n or sub_n,
-                                             piece_n > 0 and sub_n == 0))
+                                             piece_n > 0 and sub_n == 0
+                                             and part[0] == piece_start))
             trimmed += sum(b - a for a, b in pieces) \
                 - sum(b - a for a, b, *_ in parts)
             for sub_n, (sub_start, sub_end, pause_split, exact) in enumerate(parts):
@@ -481,7 +522,7 @@ def main() -> int:
     if not edl.get("cuts"):
         die("EDL has no cuts")
 
-    manifest = load_json(paths["build"] / "sources.json")
+    manifest = load_sources(paths)
     sources = manifest["sources"]
     segments = load_json(paths["build"] / "segments.json")["segments"]
     profile_name = edl.get("profile") or manifest.get("profile", "long")
@@ -555,8 +596,24 @@ def main() -> int:
         })
         position += length
 
+    # When the cut itself changed, every output time written against the old
+    # one (overlays, caption fixes) is now off. Keep the old timeline until
+    # retime.py has moved them.
+    tl_path = paths["build"] / "timeline.json"
+    prev_path = paths["build"] / "timeline.prev.json"
+    if tl_path.exists() and not prev_path.exists():
+        shape = lambda cs: [(c["source"], round(c["src_start"], 2), round(c["src_end"], 2))
+                            for c in cs]
+        old = load_json(tl_path)
+        if shape(old["cuts"]) != shape(timeline):
+            shutil.copyfile(tl_path, prev_path)
+            print("  the cut changed: run retime.py to move overlay and caption-fix "
+                  "times onto it")
+
     save_json(paths["build"] / "timeline.json", {
         "profile": profile_name, "quality": args.quality,
+        # captions.py moves word onsets out of pauses; an EDL can opt out
+        "realign_words": edl.get("realign_words", True),
         "width": width, "height": height, "fps": fps,
         "duration": round(position, 3), "cuts": timeline,
     })

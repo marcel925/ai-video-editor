@@ -87,6 +87,12 @@ def collect_words(paths: dict, timeline: dict) -> list[dict]:
     by_source: dict[str, list[dict]] = {}
     for cut in timeline["cuts"]:
         by_source.setdefault(cut["source"], []).append(cut)
+    pauses = {}
+    if timeline.get("realign_words") and (paths["build"] / "sources.json").exists():
+        from render import coalesce      # one pause, reported in pieces
+        pauses = {s["name"]: [(a, b) for a, b in coalesce(s.get("silences", []))
+                              if b - a >= 0.3]
+                  for s in load_json(paths["build"] / "sources.json")["sources"]}
 
     words: list[dict] = []
     for name, cuts in by_source.items():
@@ -94,7 +100,8 @@ def collect_words(paths: dict, timeline: dict) -> list[dict]:
         if not tfile.exists():
             die(f"missing transcript for {name}")
         data = load_json(tfile)
-        for word in (w for seg in data["segments"] for w in seg["words"]):
+        for word in on_speech([w for seg in data["segments"] for w in seg["words"]],
+                              pauses.get(name, [])):
             best, share = None, 0.0
             for cut in cuts:
                 # a boundary the EDL placed by hand is exact; only a
@@ -113,10 +120,43 @@ def collect_words(paths: dict, timeline: dict) -> list[dict]:
             end = min(word["e"] + shift, best["out_end"])
             if end - start < 0.04:
                 end = start + 0.04
-            words.append({"w": word["w"],
-                          "s": round(start, 3), "e": round(end, 3)})
+            entry = {"w": word["w"], "s": round(start, 3), "e": round(end, 3)}
+            if "s0" in word:
+                entry["s0"] = round(word["s0"] + shift, 3)
+            words.append(entry)
     words.sort(key=lambda w: w["s"])
     return words
+
+
+def on_speech(words: list[dict], pauses: list[tuple[float, float]]) -> list[dict]:
+    """Move onsets the recogniser put inside a pause back onto speech.
+
+    Around a long pause the word timings drift by a few tenths: the last word
+    before it can be labelled as starting inside the silence after it was
+    said, the first word after it as starting inside the silence before it is
+    said. Read against a cut that ends or begins in that pause, either one
+    lands on the wrong side, and a word that is heard goes missing from the
+    captions ("build this as - and this is", with "well." gone). An onset in
+    the first half of a pause belongs before it, in the second half after it.
+
+    Only for an edit that asks for it (`realign_words` in the EDL, which the
+    shorts set): applying it to a reviewed edit would move the anchors of its
+    caption fixes. The original onset is kept as `s0` for those anchors.
+    """
+    if not pauses:
+        return words
+    out, last = [], -1.0
+    for word in words:
+        s = word["s"]
+        for a, b in pauses:
+            if a < s < b:
+                s = a - 0.05 if s - a < b - s else b
+                break
+        s = max(s, last + 0.01)          # never reorder two words
+        last = s
+        out.append({**word, "s": round(s, 3), "e": round(max(word["e"], s + 0.04), 3),
+                    "s0": word["s"]})
+    return out
 
 
 def bare(word: str) -> str:
@@ -145,7 +185,8 @@ def apply_fixes(words: list[dict], fixes: dict) -> tuple[list[dict], int]:
     def hits(entry: dict, word: dict) -> bool:
         if bare(entry.get("from", entry.get("word", ""))) != bare(word["w"]):
             return False
-        return "at" not in entry or abs(float(entry["at"]) - word["s"]) <= 0.25
+        return "at" not in entry or any(
+            abs(float(entry["at"]) - word[k]) <= 0.25 for k in ("s", "s0") if k in word)
 
     replace = fixes.get("replace", [])
     if isinstance(replace, dict):       # {"misheard": "correct"} shorthand

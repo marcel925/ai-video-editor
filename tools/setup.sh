@@ -3,6 +3,9 @@
 #
 #   tools/setup.sh                 venv at <repo>/.venv (a clone of the repo)
 #   tools/setup.sh --venv DIR      venv somewhere else (the plugin data folder)
+#   tools/setup.sh --motion ENGINE motion-graphics engine(s) to install:
+#                                  remotion (default), hyperframes or both.
+#                                  Defaults to $MOTION_ENGINE when that is set.
 #
 # macOS uses Homebrew. Linux needs ffmpeg and node from the distro first.
 # Windows: run it inside WSL.
@@ -10,7 +13,19 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="$ROOT/.venv"
-if [ "${1:-}" = "--venv" ] && [ -n "${2:-}" ]; then VENV="$2"; fi
+MOTION_ENGINES="${MOTION_ENGINE:-remotion}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --venv) VENV="$2"; shift 2 ;;
+    --motion) MOTION_ENGINES="$2"; shift 2 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+case "$MOTION_ENGINES" in
+  remotion|hyperframes) ;;
+  both) MOTION_ENGINES="remotion hyperframes" ;;
+  *) echo "--motion takes remotion, hyperframes or both" >&2; exit 2 ;;
+esac
 cd "$ROOT"
 
 say() { printf '\n==> %s\n' "$1"; }
@@ -58,25 +73,33 @@ uv pip install --python "$VENV/bin/python" \
   numpy \
   requests
 
-say "remotion (motion graphics for the edited version)"
+say "motion graphics for the edited version: $MOTION_ENGINES"
+# Remotion runs on Node 18+; HyperFrames needs 22+.
 if ! need node; then
   if [ "$OS" = "Darwin" ]; then brew install node
-  else echo "  node not found - install Node 18+ for the edited version (skipping)"
+  else echo "  node not found - install Node 22+ for the edited version (skipping)"
   fi
 fi
 if need node; then
   DATA="$(dirname "$VENV")"
-  if [ "$DATA" = "$ROOT" ]; then
-    (cd motion && npm install --no-fund --no-audit)
-  else
-    # Plugin install: keep the packages in the data folder, which survives
-    # plugin updates, and link them into motion/ (motion.py relinks as needed).
-    mkdir -p "$DATA/motion"
-    cp motion/package.json motion/package-lock.json "$DATA/motion/"
-    (cd "$DATA/motion" && npm install --no-fund --no-audit)
-    rm -rf motion/node_modules
-    ln -s "$DATA/motion/node_modules" motion/node_modules
-  fi
+  for dir in $MOTION_ENGINES; do
+    [ "$dir" = remotion ] && dir=motion
+    if [ "$dir" = hyperframes ] && [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]; then
+      echo "  HyperFrames needs Node 22+ (found $(node -v)) - skipping it" >&2
+      continue
+    fi
+    if [ "$DATA" = "$ROOT" ]; then
+      (cd "$dir" && npm install --no-fund --no-audit)
+    else
+      # Plugin install: keep the packages in the data folder, which survives
+      # plugin updates, and link them in (motion.py relinks as needed).
+      mkdir -p "$DATA/$dir"
+      cp "$dir/package.json" "$dir/package-lock.json" "$DATA/$dir/"
+      (cd "$DATA/$dir" && npm install --no-fund --no-audit)
+      rm -rf "$dir/node_modules"
+      ln -s "$DATA/$dir/node_modules" "$dir/node_modules"
+    fi
+  done
 fi
 
 say "sound effects"

@@ -195,6 +195,14 @@ def report_gaps(sources: list[dict], segments: list[dict]) -> int:
             info(f"  {source['name']} has no transcript for "
                  f"{fmt_ts(start)}-{fmt_ts(end)} but there is speech there - "
                  f"re-run transcribe.py --force")
+        # the same, inside the transcript: a word that runs on over speech
+        from transcribe import word_holes
+        for prev, nxt in word_holes(by_take.get(source["name"], []), silences):
+            flagged += 1
+            info(f"  {source['name']}: speech with no words between "
+                 f"'{prev['w']}' ({fmt_ts(prev['s'])}) and '{nxt['w']}' "
+                 f"({fmt_ts(nxt['s'])}) - often a retake. Re-run transcribe.py "
+                 f"--force (or --patch-holes once the project is edited)")
     return flagged
 
 

@@ -15,7 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from common import (die, fmt_ts, info, load_json, project_paths, run,
+from common import (die, fmt_ts, info, load_json, load_sources, project_paths, run,
                     save_json)
 
 PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
@@ -34,6 +34,15 @@ CHUNK_OVERLAP = 30.0
 # a pause. Thinking pauses in these recordings run to a few seconds at most.
 GAP_SECONDS = 12.0
 GAP_SPEECH = 4.0
+
+# The engine can also skip a stretch *inside* the transcript: the word before
+# it simply runs on ("this." lasting 2.5s), and the next segment starts after
+# the hole, so no gap between segments ever shows. What was skipped is usually
+# a retake - the same line said again - so it reaches the video twice with
+# nothing in the segment list to say so. Measured on words instead: past the
+# longest a word can take, any real speech before the next word was lost.
+WORD_SPAN = 1.0
+HOLE_SPEECH = 1.0
 
 
 def words_from_tokens(tokens) -> list[dict]:
@@ -202,6 +211,62 @@ def load_engine(name: str):
     return "whisper", lambda wav, dur: transcribe_faster_whisper(wav, model)
 
 
+def word_holes(segments: list[dict], silences: list) -> list[tuple[dict, dict]]:
+    """(word before, word after) for every stretch of speech with no words."""
+    words = sorted((w for seg in segments for w in seg["words"]), key=lambda w: w["s"])
+    holes = []
+    for prev, nxt in zip(words, words[1:]):
+        a, b = prev["s"] + WORD_SPAN, nxt["s"] - 0.05
+        if b - a >= HOLE_SPEECH and speech_seconds(silences, a, b) >= HOLE_SPEECH:
+            holes.append((prev, nxt))
+    return holes
+
+
+def fill_holes(segments: list[dict], transcribe, wav: Path, silences: list,
+               patch: bool = False) -> tuple[list[dict], list[dict]]:
+    """Re-transcribe the stretches word_holes() finds and put the words back.
+
+    A fresh transcript gets each recovered stretch as a segment of its own,
+    so it is numbered in segments.md and a retake in it is grouped with the
+    line it repeats. `patch` is for a project already edited: the words go
+    into the segment before the hole instead, so every segment id the EDL
+    uses stays put, and captions, words.py and listen.py see them."""
+    found = []
+    for prev, nxt in word_holes(segments, silences):
+        start, end = prev["s"], nxt["s"]
+        with tempfile.TemporaryDirectory() as tmp:
+            piece = Path(tmp) / "hole.wav"
+            run(["ffmpeg", "-v", "error", "-ss", f"{start:.3f}",
+                 "-t", f"{end - start:.3f}", "-i", str(wav),
+                 "-ar", "16000", "-ac", "1", "-y", str(piece)])
+            got = shift(transcribe(piece, end - start), start)
+        # the first word heard is usually the one before the hole again
+        new = [w for seg in got for w in seg["words"]
+               if prev["s"] + 0.3 <= w["s"] < nxt["s"] - 0.1]
+        # ...and the last, the one after it
+        bare = lambda w: w["w"].strip(".,!?").lower()
+        while new and bare(new[-1]) == bare(nxt) and nxt["s"] - new[-1]["s"] < 0.5:
+            new.pop()
+        if not new:
+            continue
+        prev["e"] = min(prev["e"], new[0]["s"])
+        text = " ".join(w["w"] for w in new)
+        info(f"  {fmt_ts(start)}-{fmt_ts(end)} was skipped inside the transcript: "
+             f"recovered \"{text[:70]}\"")
+        found.append({"start": new[0]["s"], "end": min(new[-1]["e"], end),
+                      "text": text, "words": new})
+        if patch:
+            home = next(seg for seg in segments if prev in seg["words"])
+            home["words"] = sorted(home["words"] + new, key=lambda w: w["s"])
+            home["text"] = f"{home['text']} {text}"
+        else:
+            for seg in segments:
+                if prev in seg["words"]:
+                    seg["end"] = min(seg["end"], new[0]["s"])
+            segments = sorted(segments + [found[-1]], key=lambda sg: sg["start"])
+    return segments, found
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("project")
@@ -209,13 +274,33 @@ def main() -> int:
                     choices=["auto", "parakeet", "whisper"])
     ap.add_argument("--force", action="store_true",
                     help="re-transcribe takes that already have a transcript")
+    ap.add_argument("--patch-holes", action="store_true",
+                    help="for an edited project: recover speech skipped inside "
+                         "existing transcripts without renumbering segments")
     args = ap.parse_args()
 
     paths = project_paths(args.project)
     sources_file = paths["build"] / "sources.json"
     if not sources_file.exists():
         die("no build/sources.json - run tools/ingest.py first")
-    sources = load_json(sources_file)["sources"]
+    sources = load_sources(paths)["sources"]
+
+    if args.patch_holes:
+        engine, transcribe = load_engine(args.engine)
+        total = 0
+        for source in sources:
+            out = paths["transcripts"] / f"{source['stem']}.json"
+            if not out.exists():
+                continue
+            data = load_json(out)
+            data["segments"], found = fill_holes(
+                data["segments"], transcribe, Path(source["audio"]),
+                source.get("silences", []), patch=True)
+            if found:
+                save_json(out, data)
+                total += len(found)
+        print(f"{total} skipped stretch(es) recovered; segment ids unchanged")
+        return 0
 
     todo = [s for s in sources
             if args.force or not (paths["transcripts"] / f"{s['stem']}.json").exists()]
@@ -237,6 +322,9 @@ def main() -> int:
         segments, gaps = repair_gaps(segments, transcribe, wav,
                                      source.get("silences", []),
                                      source["duration"])
+        segments, holes = fill_holes(segments, transcribe, wav,
+                                     source.get("silences", []))
+        gaps = gaps + holes
         elapsed = time.time() - started
         save_json(out, {
             "source": source["name"],

@@ -1,6 +1,6 @@
 ---
 name: edit_video
-description: Edit raw talking-head recordings into a publishable video. Transcribes every take, picks the good ones, discards failed takes, false starts and double takes, and assembles the cut with ffmpeg. Produces the plain version; the more-edited version follows via edit_video_plus. Use when the user asks to edit a video, cut footage, assemble takes, make a short, or add captions/titles/images to an edit.
+description: Edit raw talking-head recordings into a publishable video. Transcribes every take, picks the good ones, discards failed takes, false starts and double takes, and assembles the cut with ffmpeg. Produces the plain version; the more-edited version follows via edit_video_plus. On request it also cuts vertical shorts (3 by default) out of a long-form edit. Use when the user asks to edit a video, cut footage, assemble takes, make a short, clip shorts from a long video, or add captions/titles/images to an edit.
 ---
 
 # edit_video
@@ -9,14 +9,21 @@ Turn a folder of raw recordings into a finished video. Everything runs
 locally; nothing is uploaded.
 
 ```
-/edit_video <project_name> [long|short]
+/edit_video <project_name> [long|short] [shorts[=N]]
 ```
 
 `<project_name>` is a folder under `videos/` in the working folder. The name
 carries the form: `_short` edits short, anything else long. Pass an explicit
 `long`/`short` (`$F`) through as `--profile` only when the user gives one. Topics
 usually come in pairs (`my_topic_long`, `my_topic_short`): separate projects,
-each run through the whole pipeline. Never derive the short from the long.
+each run through the whole pipeline. Never derive the `_short` project from
+the long one.
+
+`shorts` (or `shorts=N`, or the user asking for shorts or clips "from this
+video") is different: a long-form edit also yields N vertical clips cut out of
+its own approved material, 3 when no number is given. They are extras beside
+the long video, never a replacement for a `_short` project. **Only when asked**:
+without the parameter, no shorts. See "Shorts from the long form" below.
 
 Formats and options for every file below are in `reference.md` next to this
 file. Read it before writing an EDL or overlays for the first time.
@@ -65,7 +72,12 @@ $PY $T/reframe.py    $P                   # short form only
 ```
 
 **If `prepare.py` warns that speech is missing, run `transcribe.py $P
---force` before editing.** A hole is invisible from `segments.md` alone.
+--force` before editing** (`--patch-holes` once an EDL exists: it keeps the
+segment ids). A hole is invisible from `segments.md` alone, and the usual
+thing in one is a retake: the same line said again, which would reach the
+cut twice. `transcribe.py` re-transcribes every hole it finds, including the
+ones *inside* a segment where a word runs on over unrecognised speech, and
+numbers what it recovers as segments of their own.
 
 Read `$P/build/segments.md` in full and write `$P/build/edl.json` (the
 editorial pass below). Then:
@@ -77,19 +89,45 @@ $PY $T/captions.py $P
 
 Resolve every `check:` line `captions.py` prints, run `words.py $P
 --repeats`, and read `$P/build/captions.srt` end to end (see "No double
-takes" and `reference.md`). Then:
+takes" and `reference.md`). Then **listen to the cut**:
+
+```bash
+$PY $T/listen.py   $P                     # re-transcribes cut_preview.mp4
+```
+
+Every check before it reads the transcript; this one hears the render. Each
+`check:` line is a real problem until shown otherwise:
+
+- `heard but not captioned` of a whole phrase: a retake or a stray sentence
+  the transcript never had. Run `transcribe.py $P --patch-holes`, `prepare.py`,
+  and edit it out (or keep it, if it is good) like any other line.
+- one word heard but not captioned at a join: a syllable of removed material
+  survives. Move the `drop` edge or the cut boundary.
+- `captioned but not heard`: the cut clips what the captions promise.
+
+It also lists phrases *heard* twice: compare with `words.py --repeats`; one
+the transcript missed is a hidden retake. The cut is not ready to show until
+`listen.py` says `heard = captioned`. Then:
 
 ```bash
 $PY $T/finish.py   $P --quality preview
 ```
 
-Show the user `$P/preview.mp4` with the report, and **wait for notes**. Only
-after they approve:
+With `shorts`, pick them and render the drafts now (see "Shorts from the
+long form"):
+
+```bash
+$PY $T/shorts.py   render $P --quality preview    # -> $P/shorts/<slug>/preview.mp4
+```
+
+Show the user `$P/preview.mp4` (and the draft shorts) with the report, and
+**wait for notes**. Only after they approve:
 
 ```bash
 $PY $T/render.py   $P --quality final
 $PY $T/captions.py $P
 $PY $T/finish.py   $P --quality final
+$PY $T/shorts.py   render $P --quality final      # only if shorts.json exists
 ```
 
 **Then run `/youtube_metadata <project_name>` straight away**, without
@@ -163,6 +201,73 @@ made out of order; say so if you reorder.
 4-7%) on alternate clips at sentence-ending pauses. Keep it small; above ~10%
 it reads as a mistake. Overlays (below) do the rest.
 
+## Shorts from the long form
+
+Opt-in. Done in the preview step, after the long cut has passed its own
+checks, because a short is cut from what the long edit kept: never from a
+retake, a false start or a dropped line.
+
+```bash
+$PY $T/shorts.py list  $P     # the long cut's kept lines, by segment id
+```
+
+Read it whole, then pick N moments. A good short:
+
+- **stands alone.** No "as I said", "lesson number three" or "in this video"
+  that needs the rest. One idea, set up and paid off.
+- **hooks in the first two seconds.** Open on its boldest line: a number, a
+  contrarian claim ("marketing is more important than your code"), a story's
+  conflict. Cuts play in the order listed, so the hook may come from later in
+  the take, or from the long video's cold open (a credibility line like "I
+  grew my app to $100k a month" fronts any lesson).
+- **ends on a landing**: the verdict, the result, the punchline. Not "so
+  yeah" and not a sentence that trails into the next point.
+- **runs 20-55s.** Pause trimming takes off 10-15% of the segment lengths.
+- **differs from the other picks.** Separate ideas, no shared lines, and
+  the hook line used at most once across the set.
+
+Rank the candidates and keep the best N. Write `$P/build/shorts.json`
+(format in `reference.md`): per short a `slug`, a `title` of at most ~30
+characters for the top of the frame (the claim, not the topic: "Onboarding
+5x'd our revenue", not "Onboarding"), a `note` saying why it works alone, and
+`cuts` in EDL form. `start_at` / `end_at` start or end a cut on a phrase
+inside its segment, with no timestamp, and only where a pause sits there
+(see below). Everything the long edit fixed inside those segments (`drop`
+ranges, trims) carries over by itself.
+
+```bash
+$PY $T/shorts.py crops  $P    # -> build/shorts/crops.jpg; LOOK at it
+$PY $T/shorts.py render $P --quality preview
+```
+
+**Look at `crops.jpg`**: one row per take, the 9:16 window drawn on frames
+from the parts the shorts use. The crop is static per take and centred on
+the detected face; if the face sits off-centre in the window, or a gesture
+the line depends on is cut off, set `"crops": {"<take>": 0.55}` (the crop's
+centre as a fraction of the frame width) and re-run.
+
+`render` builds each short as a small project in `$P/shorts/<slug>/` (short
+profile: tight pauses, karaoke captions, no fade-in) and then **listens to
+it**: it re-transcribes the render and prints a `check:` line for every
+word heard but not captioned, or captioned but not heard. Resolve every one:
+
+- `heard but not captioned` at a join: a word of the neighbouring line leaks
+  in. Drop the `start_at`/`end_at` there and keep the whole sentence, or end
+  the cut one sentence earlier.
+- a whole phrase heard twice: a retake hidden in a gap of the transcript.
+  End the cut before it with `end_at`. The long edit has it too, so tell
+  the user.
+- a `note: no pause at` line: a phrase edge inside running speech. The
+  listen check says whether it leaked.
+
+Then run `words.py $P/shorts/<slug>` for each short, read every line, and
+look at `build/shorts/review_preview.jpg` (four frames per short: crop,
+title, captions). Report the shorts after the long cut: slug, runtime, the
+opening line, and why it stands alone.
+
+The shorts are the plain treatment. For b-roll and graphics on one, run
+`/edit_video_plus` on `$P/shorts/<slug>`: it is a project like any other.
+
 ## Reporting the cut
 
 Check the render first:
@@ -217,10 +322,16 @@ turn their answers into `$P/build/overlays.json` and re-run `finish.py` only.
   `final.mp4`.
 - Never delete or modify anything in `raw_videos/`.
 - Never edit from a transcript `prepare.py` flagged as incomplete.
-- Run `words.py --repeats` after every render. No line may appear twice.
+- Run `words.py --repeats` and `listen.py` after every render. No line may
+  appear twice, and every word heard must be captioned.
+- After changing an approved EDL, run `retime.py $P` (render.py says when):
+  it moves overlay and caption-fix times onto the new cut. Then update the
+  chapters in `upload/youtube-metadata.md`.
 - Read the generated `.srt` before finishing.
 - Finish every edit with overlay proposals, then make the edited version
   with `edit_video_plus`. It never replaces the plain files.
 - Never reword what the speaker actually said.
 - Every final render ends with `/youtube_metadata`, run automatically. A
   project is not finished until its `upload/` folder is current.
+- Shorts only when asked for, picked from the long cut's kept lines, and
+  never reported until their listen check is clean.

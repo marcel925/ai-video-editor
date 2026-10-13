@@ -1,6 +1,6 @@
 ---
 name: edit_video_plus
-description: Make the more-edited version of a finished talking-head cut - b-roll from Pexels/Pixabay, Remotion motion graphics (title cards, counting numbers, lists, logos, screenshots), split screens, punch-in zooms and sound effects - rendered beside the plain version as preview_edited.mp4 so the two can be compared. Use after /edit_video has produced a cut, or when the user asks for a "more edited", "b-roll", "more engaging" or "both versions" edit.
+description: Make the more-edited version of a finished talking-head cut - b-roll from Pexels/Pixabay, motion graphics (Remotion or HyperFrames) (title cards, counting numbers, lists, logos, screenshots), split screens, punch-in zooms and sound effects - rendered beside the plain version as preview_edited.mp4 so the two can be compared. Use after /edit_video has produced a cut, or when the user asks for a "more edited", "b-roll", "more engaging" or "both versions" edit.
 ---
 
 # edit_video_plus
@@ -25,8 +25,9 @@ PY="${CLAUDE_PLUGIN_DATA}/venv/bin/python"; T="${CLAUDE_PLUGIN_ROOT}/tools"
 ```
 
 (or `PY=.venv/bin/python; T=tools` in a clone of the repository, where those
-read as literal placeholders). The edited version also needs Node (Remotion)
-and a free stock-footage API key; `doctor.py` checks both. Without a key,
+read as literal placeholders). The edited version also needs Node and a motion-graphics
+engine (Remotion or HyperFrames, below) and a free stock-footage API key;
+`doctor.py` checks all three. Without a key,
 skip stock b-roll and use the user's own assets and motion graphics only.
 
 ## Preconditions
@@ -38,7 +39,9 @@ comparison is only about the editing, and so captions, timings and fixes
 carry over for free.
 
 **If the plain EDL changes later, every time in `overlays_edited.json`
-downstream of the change moves.** Re-run `words.py $P` and re-derive them.
+downstream of the change moves.** `render.py` keeps the old timeline when the
+cut changes; run `retime.py $P` to move every layer (and caption fix) onto
+the new one, then re-check the layers it reports and the review sheet.
 
 ## Pipeline
 
@@ -47,7 +50,7 @@ $PY $T/words.py   $P                 # sentence per line, output times
 $PY $T/stock.py   search $P "query"  # -> contact sheet; LOOK at it
 $PY $T/stock.py   get    $P <id> --name <slug>
 #   write $P/build/overlays_edited.json
-$PY $T/motion.py  $P                 # Remotion renders, cached
+$PY $T/motion.py  $P                 # motion graphics, cached
 $PY $T/finish.py  $P --variant edited --quality preview
 $PY $T/review.py  $P                 # contact sheet + pacing; LOOK at it
 ```
@@ -224,6 +227,27 @@ in `motion/src/Root.tsx` and add its name to `COMPS` in `tools/motion.py`
 (all relative to the plugin root, `$T/..`).
 **Never give a Composition real `defaultProps`**: Remotion merges them into
 every render, so sample values leak onto cards that never asked for them.
+
+### Engines
+
+Two renderers draw the same components; `MOTION_ENGINE` (environment or
+`.env`) picks one. Unset, it is whichever `setup.sh` installed, Remotion if
+both. `doctor.py` shows which is in use.
+
+| | `remotion` (`motion/`) | `hyperframes` (`hyperframes/`) |
+|---|---|---|
+| licence | free for individuals and companies of up to 3 people | Apache-2.0 |
+| install | `setup.sh --motion remotion` (default) | `setup.sh --motion hyperframes` (Node 22+) |
+| studio | `npm run studio` | none - render and look |
+
+Under HyperFrames the components run on `hyperframes/shim/remotion.tsx`, a
+small reimplementation of the Remotion API they use. A component may only
+import what the shim exports (`AbsoluteFill`, `Img`, `staticFile`,
+`useCurrentFrame`, `useVideoConfig`, `interpolate`, `spring`, `Easing`); a
+new import must be added to the shim too, or the HyperFrames build fails.
+Clips from each engine are cached under their own names, so switching
+re-renders instead of mixing the two. Never switch engines between a
+preview and its final without re-checking the review sheet.
 
 ## Step 5 - render and review
 

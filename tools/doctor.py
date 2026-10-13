@@ -87,9 +87,16 @@ def main() -> int:
     print("\nedited version (edit_video_plus) - optional")
     node = shutil.which("node")
     check("node on PATH", bool(node), "install Node 18+", fatal=False, value=node or "")
-    data = Path(sys.prefix).resolve().parent / "motion" / "node_modules"
-    check("remotion installed", (ROOT / "motion" / "node_modules" / "remotion").exists()
-          or (data / "remotion").exists(), "run tools/setup.sh", fatal=False)
+    from motion import ENGINES, installed, motion_engine
+    engine = motion_engine()
+    for name, (_, _, label) in ENGINES.items():
+        check(f"{label} installed", installed(name),
+              f"run tools/setup.sh --motion {name}", fatal=False,
+              value="in use (MOTION_ENGINE to switch)" if name == engine else "")
+    if engine == "hyperframes" and node:
+        major = int(subprocess.run([node, "-p", "process.versions.node.split('.')[0]"],
+                                   capture_output=True, text=True).stdout.strip() or 0)
+        check("Node 22+ for HyperFrames", major >= 22, f"found Node {major}", fatal=False)
     load_env()
     keys = [k for k in ("PEXELS_API_KEY", "PIXABAY_API_KEY") if os.environ.get(k)]
     check("stock footage API key", bool(keys),

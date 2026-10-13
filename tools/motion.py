@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the motion-graphics layers of an edit with Remotion.
+"""Render the motion-graphics layers of an edit, with Remotion or HyperFrames.
 
 Every `{"type": "motion", ...}` entry in build/overlays_edited.json becomes a
 clip under build/motion/, named by a hash of what it draws - so re-running
@@ -18,41 +18,87 @@ Clips render at the profile's full resolution, not the preview's, so the
 preview and the final use the same files. Transparent components (bg "none")
 come out as VP9 WebM with alpha; anything with a background is an opaque
 H.264 card.
+
+Two engines draw the same components (motion/src/comps). MOTION_ENGINE picks
+one, from the environment or .env, like the API keys:
+
+  remotion      motion/       - the original renderer. Free for individuals
+                                and companies of up to 3 people; larger ones
+                                need a Remotion company licence.
+  hyperframes   hyperframes/  - HeyGen's Apache-2.0 renderer; the components
+                                run on a small Remotion shim.
+
+Unset, it is whichever one setup.sh installed, Remotion if both. Clips from
+the two engines are cached under different names, so switching re-renders.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from common import die, digest, info, load_json, load_profile, project_paths, save_json
+from common import die, digest, info, load_env, load_json, load_profile, project_paths, save_json
 
 ROOT = Path(__file__).resolve().parent.parent
 MOTION = ROOT / "motion"
+# engine -> (its folder, the package that shows it is installed, display name)
+ENGINES = {
+    "remotion": (MOTION, "remotion", "Remotion"),
+    "hyperframes": (ROOT / "hyperframes", "@hyperframes/producer", "HyperFrames"),
+}
 
 
+def data_dir(engine: str) -> Path:
+    """Where a plugin install keeps an engine's packages: the plugin's data
+    folder, next to the venv, which survives plugin updates."""
+    return Path(sys.prefix).resolve().parent / ENGINES[engine][0].name
 
-def ensure_node_modules() -> None:
-    """Remotion's packages. In a clone they sit in motion/node_modules. In a
-    plugin install they live in the plugin's data folder (next to the venv),
-    which survives plugin updates, and motion/node_modules is a link to them
-    that this recreates after an update replaced the plugin folder."""
-    local = MOTION / "node_modules"
-    data = Path(sys.prefix).resolve().parent / "motion"
-    if data.resolve() == MOTION.resolve() or not (data / "node_modules").is_dir():
+
+def installed(engine: str) -> bool:
+    folder, package, _ = ENGINES[engine]
+    return any((d / "node_modules" / package).exists() for d in (folder, data_dir(engine)))
+
+
+_ENGINE: str | None = None
+
+
+def motion_engine() -> str:
+    """MOTION_ENGINE if set; otherwise the installed engine, Remotion first.
+    motion.py and finish.py both ask, so they name the same files."""
+    global _ENGINE
+    if _ENGINE is None:
+        load_env()
+        name = os.environ.get("MOTION_ENGINE", "").strip().lower()
+        if name and name not in ENGINES:
+            die(f"MOTION_ENGINE={name!r} - use one of {sorted(ENGINES)}")
+        _ENGINE = name or ("hyperframes" if installed("hyperframes") and not installed("remotion")
+                           else "remotion")
+    return _ENGINE
+
+
+def ensure_node_modules(engine: str) -> None:
+    """The engine's packages. In a clone they sit in <engine>/node_modules. In
+    a plugin install they live in the plugin's data folder and
+    <engine>/node_modules is a link to them, which this recreates after an
+    update replaced the plugin folder."""
+    folder, _, label = ENGINES[engine]
+    local = folder / "node_modules"
+    data = data_dir(engine)
+    if data.resolve() == folder.resolve() or not (data / "node_modules").is_dir():
         if not local.exists():
-            die("Remotion is not installed - run tools/setup.sh")
+            die(f"{label} is not installed - run tools/setup.sh --motion {engine}")
         return
-    if (data / "package-lock.json").read_bytes() != (MOTION / "package-lock.json").read_bytes():
-        die("Remotion's dependencies changed in a plugin update - re-run setup.sh")
+    if (data / "package-lock.json").read_bytes() != (folder / "package-lock.json").read_bytes():
+        die(f"{label}'s dependencies changed in a plugin update - re-run setup.sh --motion {engine}")
     if not local.exists():
         if local.is_symlink():
             local.unlink()
         local.symlink_to(data / "node_modules", target_is_directory=True)
-        info("linked Remotion packages from the plugin data folder")
+        info(f"linked {label} packages from the plugin data folder")
 
 
 # the components that draw their own background unless told bg: "none"
@@ -92,10 +138,15 @@ _SRC_HASH: str | None = None
 
 def source_hash() -> str:
     """Changes whenever any component or the theme does, so a design tweak
-    re-renders every clip instead of silently reusing the old look."""
+    re-renders every clip instead of silently reusing the old look. Under
+    HyperFrames the shim and the page count too."""
     global _SRC_HASH
     if _SRC_HASH is None:
         files = sorted((MOTION / "src").rglob("*.ts*"))
+        if motion_engine() == "hyperframes":
+            hf = ENGINES["hyperframes"][0]
+            files += sorted((hf / "shim").rglob("*.ts*")) + sorted((hf / "src").rglob("*.ts*"))
+            files.append(hf / "render.mjs")
         _SRC_HASH = digest(*(f.read_bytes() for f in files))
     return _SRC_HASH
 
@@ -104,8 +155,13 @@ def motion_file(build: Path, ov: dict, profile: dict) -> Path:
     fill_props(ov, build.parent)
     w, h, fps = frame_size(profile)
     dur = round(float(ov["end"]) - float(ov["start"]), 3)
-    key = digest(ov["comp"], json.dumps(ov.get("props", {}), sort_keys=True),
-                 dur, is_transparent(ov), w, h, fps, source_hash())
+    parts = [ov["comp"], json.dumps(ov.get("props", {}), sort_keys=True),
+             dur, is_transparent(ov), w, h, fps, source_hash()]
+    # Remotion's names predate the second engine; keep them so existing
+    # caches stay valid
+    if motion_engine() != "remotion":
+        parts.append(motion_engine())
+    key = digest(*parts)
     ext = ".webm" if is_transparent(ov) else ".mp4"
     return build / "motion" / f"{ov['comp']}_{key}{ext}"
 
@@ -144,7 +200,8 @@ def main() -> int:
     if not entries:
         info("no motion entries - nothing to render")
         return 0
-    ensure_node_modules()
+    engine = motion_engine()
+    ensure_node_modules(engine)
 
     w, h, fps = frame_size(profile)
     public = paths["build"] / "motion" / "public"
@@ -173,15 +230,16 @@ def main() -> int:
         if old.is_file() and old.name not in wanted and old.suffix in (".webm", ".mp4"):
             old.unlink()
 
-    print(f"  {len(entries)} motion layer(s), {len(items)} to render")
+    print(f"  {len(entries)} motion layer(s), {len(items)} to render ({ENGINES[engine][2]})")
     if not items:
         return 0
     public.mkdir(parents=True, exist_ok=True)
     spec = paths["build"] / "motion" / "spec.json"
     save_json(spec, {"publicDir": str(public), "items": items})
-    proc = subprocess.run(["node", str(MOTION / "render.mjs"), str(spec)], cwd=MOTION)
+    folder = ENGINES[engine][0]
+    proc = subprocess.run(["node", str(folder / "render.mjs"), str(spec)], cwd=folder)
     if proc.returncode != 0:
-        die("remotion render failed - see the output above")
+        die(f"{ENGINES[engine][2]} render failed - see the output above")
     return 0
 
 

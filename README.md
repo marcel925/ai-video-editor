@@ -126,7 +126,9 @@ npm run final:all                   # every edited project in videos/, one by on
 ```
 
 `final:plain`, `final:edited`, `preview:plain` and `preview:edited` build one
-version. Run projects one after another rather than in parallel: each render
+version. Add `shorts` (or `shorts=2`) to any of them to also build the
+vertical shorts picked for that video, or use `npm run final:shorts --
+my_topic_long` for the shorts alone (see below). Run projects one after another rather than in parallel: each render
 already uses most of the CPU.
 
 When `/edit_video` or `/edit_video_plus` renders a final, it runs
@@ -164,12 +166,29 @@ Not a resolution flag: a different edit.
 Short form starts on the most compelling sentence in the recording, even if
 it is four minutes in.
 
+## Shorts from a long video
+
+Ask for them: `/edit_video my_topic_long shorts` (or `shorts=5`; 3 by
+default; none unless you ask). Alongside the long edit, the AI picks the
+moments that stand on their own, each with a hook in the first two seconds
+and an ending that lands, from the lines the long cut kept. It then places a
+9:16 crop per take, centred on your face (it checks the frames), and renders:
+
+- **drafts with the preview**: `shorts/<slug>/preview.mp4`
+- **full quality with the final**: `shorts/<slug>/final.mp4`
+
+Each short gets burned-in word-by-word captions, an optional title card and
+the short form's tight pacing. Every render is re-transcribed and compared
+with its captions, so a word leaking in at a join, or a retake hidden in a
+gap of the transcript, is caught before you see it.
+
 ## What you get
 
 ```
 videos/my_topic_long/
   preview.mp4 / final.mp4                 the plain version
   preview_edited.mp4 / final_edited.mp4   the edited version, same cut
+  shorts/<slug>/final.mp4                 vertical shorts, when asked for
   assets/stock/CREDITS.md                 stock credits for the description
   build/
     segments.md          every line you said, numbered
@@ -188,6 +207,9 @@ minutes.
   boundary, so no syllable is clipped. Every join gets a 20 ms audio fade.
 - **No double takes.** After every render, repeated phrases are flagged, so a
   restarted sentence cannot slip through inside a single segment.
+- **It listens to its own render.** The cut is transcribed again and compared
+  with its captions: a syllable surviving at a join, or a retake the first
+  transcript skipped, is caught before you watch it.
 - **Natural colour.** No grading. HDR phone footage is tone-mapped to SDR in
   the edited version so it matches stock footage and graphics.
 - **Loudness normalised to −14 LUFS**, what YouTube targets.
@@ -205,13 +227,16 @@ pipeline by hand.
 | `transcribe.py` | word-level transcripts |
 | `prepare.py` | numbered segment list + retake grouping |
 | `reframe.py` | place the 9:16 crop on the speaker |
+| `shorts.py` | vertical shorts from a long edit: list, crop sheet, render + listen check |
 | `render.py` | EDL → cut video |
 | `captions.py` | styled `.ass` + uploadable `.srt`, plus automatic checks |
 | `words.py` | word times on the output timeline (`--find`, `--repeats`) |
 | `finish.py` | captions, overlays, the edited version; final encode |
 | `stock.py` | search Pexels + Pixabay, contact sheet, download with credits |
-| `motion.py` | render the Remotion motion graphics |
+| `motion.py` | render the motion graphics (Remotion or HyperFrames) |
 | `review.py` | contact sheet + pacing and edit-budget check |
+| `listen.py` | re-transcribe the render: leaked syllables, hidden retakes |
+| `retime.py` | move overlay and caption-fix times after an EDL change |
 | `export.py` | timeline for Resolve / Final Cut |
 
 ## Limitations
@@ -227,8 +252,17 @@ pipeline by hand.
 
 ## Licence
 
-MIT (see `LICENSE`). The motion graphics use [Remotion](https://remotion.dev),
-which is free for individuals and companies of up to three people; larger
-companies need a [Remotion company licence](https://remotion.pro). Stock
+MIT (see `LICENSE`). The motion graphics render with either of two engines,
+chosen with `MOTION_ENGINE` in `.env`:
+
+- [Remotion](https://remotion.dev) (the default), free for individuals and
+  companies of up to three people; larger companies need a
+  [Remotion company licence](https://remotion.pro).
+- [HyperFrames](https://github.com/heygen-com/hyperframes), Apache-2.0, no
+  seat or render limits. Install it with `tools/setup.sh --motion hyperframes`
+  (needs Node 22+) and set `MOTION_ENGINE=hyperframes`.
+
+Both draw the same components from `motion/src/comps/`, so a video looks the
+same either way. Stock
 footage stays under the Pexels and Pixabay licences; credits are written to
 `assets/stock/CREDITS.md`.

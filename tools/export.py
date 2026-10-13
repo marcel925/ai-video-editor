@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from common import die, load_json, project_paths
+from common import die, load_json, load_sources, project_paths
 
 # FCPXML wants every time as a rational multiple of the frame duration.
 FRAME_DURATIONS = {
@@ -133,7 +133,7 @@ def main() -> int:
     if not tpath.exists():
         die("no build/timeline.json - run tools/render.py first")
     timeline = load_json(tpath)
-    sources = load_json(paths["build"] / "sources.json")["sources"]
+    sources = load_sources(paths)["sources"]
     title = args.title or paths["root"].name
 
     otio_path = paths["build"] / "edit.otio"

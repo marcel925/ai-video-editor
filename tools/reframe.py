@@ -12,7 +12,7 @@ import statistics
 import sys
 from pathlib import Path
 
-from common import die, info, load_json, project_paths, save_json
+from common import die, info, load_sources, project_paths, save_json
 
 
 def sample_faces(video: str, duration: float, samples: int) -> list[tuple[float, float]]:
@@ -63,7 +63,7 @@ def main() -> int:
     sources_file = paths["build"] / "sources.json"
     if not sources_file.exists():
         die("no build/sources.json - run tools/ingest.py first")
-    sources = load_json(sources_file)["sources"]
+    sources = load_sources(paths)["sources"]
 
     focus = {}
     for source in sources:

@@ -598,7 +598,8 @@ def main() -> int:
         except json.JSONDecodeError as exc:
             die(f"{cap_ov} is not valid JSON: {exc}")
 
-    # motion layers are Remotion renders; tools/motion.py makes the files
+    # motion layers are Remotion or HyperFrames renders; tools/motion.py
+    # makes the files
     motions = [o for o in overlays if o.get("type") == "motion"]
     if motions:
         from motion import motion_file
