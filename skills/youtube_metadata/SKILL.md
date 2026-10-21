@@ -1,6 +1,6 @@
 ---
 name: youtube_metadata
-description: Write YouTube metadata for a finished video - title options, description, chapters, tags, settings, pinned comment and stock credits - into <project>/upload/youtube-metadata.md, beside title-named copies of the finals and captions.srt, so the upload/ folder holds everything needed in YouTube Studio. Runs automatically at the end of every final render from edit_video / edit_video_plus; also use when the user asks for titles, descriptions, chapters, tags, "YouTube metadata" or files to upload. Accepts one project name or "all".
+description: Write YouTube metadata for a finished video - title options, description, chapters, tags, settings, pinned comment and stock credits - into <project>/upload/youtube-metadata.md, beside title-named copies of the finals and captions.srt, so the upload/ folder holds everything needed in YouTube Studio, then hands off to social_posts for the other platforms. Runs automatically at the end of every final render from edit_video / edit_video_plus; also use when the user asks for titles, descriptions, chapters, tags, "YouTube metadata" or files to upload. Accepts one project name or "all".
 ---
 
 # youtube_metadata
@@ -148,10 +148,18 @@ cp "$P/build/captions.srt" "$P/upload/captions.srt"
   checking what they are. Never delete `youtube-metadata.md` there.
 - A re-render doesn't update `upload/`. Re-run this step after new finals.
 
+## Step 4 - social posts
+
+Then run `/social_posts <project_name>` straight away, without asking. It
+writes `$P/upload/social-posts.md` (X, Reddit, Threads, Instagram, LinkedIn,
+TikTok, Indie Hackers) from the same transcript and the title chosen here.
+For `all`, run `/social_posts all` after the last project.
+
 ## Report
 
 Per video, in a table: title 1 and the `upload/` filenames. Then list
 anything the user still has to do in YouTube Studio (e.g. pick the Shorts
 related video) and anything you had to judge (e.g. a list video where the
 speaker's count doesn't match the items).
-Don't paste the full metadata into chat; point to the files.
+Add the social_posts report below it. Don't paste the full metadata or the
+posts into chat; point to the files.

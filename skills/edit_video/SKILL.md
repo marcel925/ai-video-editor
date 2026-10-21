@@ -59,6 +59,7 @@ videos/<project>/
   preview.mp4  final.mp4                the plain version
   preview_edited.mp4  final_edited.mp4  the edited version (edit_video_plus)
   upload/                               metadata + title-named copies to upload (youtube_metadata)
+                                        social-posts.md for X, LinkedIn, Threads, ... (social_posts)
 ```
 
 ## Pipeline
@@ -134,7 +135,9 @@ $PY $T/shorts.py   render $P --quality final      # only if shorts.json exists
 asking, when this is the project's last final: the user asked for plain
 only, or `final_edited.mp4` already exists. Otherwise the edited version
 comes next and `edit_video_plus` runs it after its own final, so both
-copies land in `upload/`. Tell the user once it is done.
+copies land in `upload/`. `youtube_metadata` then runs `/social_posts`, so
+the copy-paste posts for every other platform land in
+`upload/social-posts.md` too. Tell the user once it is done.
 
 Ingest and transcription are cached; a re-render only re-encodes the clips
 that changed.
@@ -331,7 +334,8 @@ turn their answers into `$P/build/overlays.json` and re-run `finish.py` only.
 - Finish every edit with overlay proposals, then make the edited version
   with `edit_video_plus`. It never replaces the plain files.
 - Never reword what the speaker actually said.
-- Every final render ends with `/youtube_metadata`, run automatically. A
-  project is not finished until its `upload/` folder is current.
+- Every final render ends with `/youtube_metadata` and `/social_posts`, run
+  automatically. A project is not finished until its `upload/` folder,
+  posts included, is current.
 - Shorts only when asked for, picked from the long cut's kept lines, and
   never reported until their listen check is clean.

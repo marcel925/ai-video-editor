@@ -77,7 +77,8 @@ claude
 ```
 
 The skills load as project skills (`/edit_video`, `/edit_video_plus`,
-`/youtube_metadata`) and your
+`/youtube_metadata`, `/social_posts` and its `/post_*` platform skills,
+`/unslop`) and your
 projects go in `videos/` inside the clone.
 
 ## Platforms
@@ -138,6 +139,20 @@ Claude), run `/youtube_metadata my_topic_long` (or `all`) yourself to
 refresh it. It writes an `upload/` folder with everything YouTube Studio needs: `youtube-metadata.md`
 (titles, description, chapters, tags, credits), title-named copies of the
 finals and `captions.srt`.
+
+### Posts for the other platforms
+
+After the YouTube metadata, `/social_posts` turns the same transcript into
+copy-paste posts for X, Reddit, Threads, Instagram, LinkedIn, TikTok and
+Indie Hackers, in `upload/social-posts.md`. Each one follows that platform's
+conventions as of October 2026: length, where the link goes, hashtags or
+none, the hook above the "see more" cut-off. Each goes through `/unslop` to
+strip AI tells, and `postcheck.py` checks it against the platform's
+character limit. One skill per platform (`/post_x`, `/post_linkedin`,
+`/post_threads`, `/post_reddit`, `/post_instagram`, `/post_tiktok`,
+`/post_indiehackers`) holds the rules and their sources, and can be run on
+its own. Once the video is live, put its URL in `upload/youtube-url.txt` and
+run `/social_posts my_topic_long` again to fill in the link replies.
 
 ## Two versions of every video
 
@@ -238,6 +253,7 @@ pipeline by hand.
 | `listen.py` | re-transcribe the render: leaked syllables, hidden retakes |
 | `retime.py` | move overlay and caption-fix times after an EDL change |
 | `export.py` | timeline for Resolve / Final Cut |
+| `postcheck.py` | character limits, fold preview and dash check for `upload/social-posts.md` |
 
 ## Limitations
 

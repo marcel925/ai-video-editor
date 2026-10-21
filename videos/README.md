@@ -62,5 +62,16 @@ When `/edit_video` or `/edit_video_plus` renders a final it runs
 `/youtube_metadata` for you,
 which fills the project's `upload/` folder with everything YouTube Studio needs:
 `youtube-metadata.md` (title, description, chapters, tags), title-named
-copies of the finals and `captions.srt`. After re-rendering with
-`npm run final`, run `/youtube_metadata my_topic_long` yourself to refresh it.
+copies of the finals and `captions.srt`. It then runs `/social_posts`, which
+writes `upload/social-posts.md`: copy-paste posts for X, Reddit, Threads,
+Instagram, LinkedIn, TikTok and Indie Hackers. After re-rendering with
+`npm run final`, run `/youtube_metadata my_topic_long` yourself to refresh
+both.
+
+Two optional files feed the posts:
+
+- `my_topic_long/upload/youtube-url.txt`: the published video's URL, one
+  line. With it, the posts get their link replies.
+- `videos/creator.md`: your handles, product URLs and any voice notes
+  ("never use emoji", "always lowercase on X"). It is the only place a post
+  may take a handle or URL from.

@@ -67,7 +67,8 @@ $PY $T/finish.py   $P --variant edited --quality final   # -> final_edited.mp4
 Motion clips render at full resolution once and serve both preview and final.
 Once the final is rendered, **run `/youtube_metadata <project_name>`
 straight away**, without asking, for the titles, description, chapters and
-title-named upload copies. If `upload/youtube-metadata.md` already exists,
+title-named upload copies. It runs `/social_posts` after itself, which
+writes the posts for the other platforms. If `upload/youtube-metadata.md` already exists,
 update it in place (new chapter times, fresh copies of the finals) rather
 than starting over.
 

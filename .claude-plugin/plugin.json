@@ -1,8 +1,8 @@
 {
   "name": "video-editor",
   "version": "0.1.0",
-  "description": "Edit raw talking-head recordings into a publishable video: picks the good takes, cuts the retakes, captions it, and makes a b-roll/motion-graphics version beside the plain one, plus vertical shorts cut from it on request. Runs locally with ffmpeg.",
+  "description": "Edit raw talking-head recordings into a publishable video: picks the good takes, cuts the retakes, captions it, and makes a b-roll/motion-graphics version beside the plain one, plus vertical shorts cut from it on request, YouTube metadata, and native posts for X, Reddit, Threads, Instagram, LinkedIn, TikTok and Indie Hackers. Runs locally with ffmpeg.",
   "author": { "name": "Marcel Jora" },
   "license": "MIT",
-  "keywords": ["video", "ffmpeg", "youtube", "shorts", "captions", "remotion", "hyperframes"]
+  "keywords": ["video", "ffmpeg", "youtube", "shorts", "captions", "remotion", "hyperframes", "social media", "repurpose"]
 }
