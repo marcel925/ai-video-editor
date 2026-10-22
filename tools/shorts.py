@@ -119,6 +119,19 @@ def inherit(cut: dict, cuts: list[dict], order: dict,
         if theirs[-1] == mine[-1] and "trim_end" in lc and "trim_end" not in cut:
             out["trim_end"] = lc["trim_end"]
             log.append(f"trim_end {lc['trim_end']}")
+    # edge_anchors already cut both edges on a word, with a drop reaching
+    # 1.5 s past the segment. An inherited trim that pushes the edge further
+    # out (the long edit carrying a sentence the first transcript missed)
+    # would reach past that drop and play the next word - so widen it.
+    first, last = segments[mine[0]], segments[mine[-1]]
+    extend = (("trim_end", 1, round(last["end"] + 1.5, 3), lambda t: last["end"] + t + 0.5),
+              ("trim_start", 0, round(first["start"] - 1.5, 3), lambda t: first["start"] + t - 0.5))
+    for key, side, edge, wider in extend:
+        trim = float(out.get(key, 0.0))
+        if (trim > 0) if key == "trim_end" else (trim < 0):
+            for d in drops:
+                if d[side] == edge:
+                    d[side] = round(wider(trim), 3)
     out.pop("own_drop", None)
     if drops:
         out["drop"] = drops
