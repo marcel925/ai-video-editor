@@ -1,6 +1,6 @@
 ---
 name: youtube_metadata
-description: Write YouTube metadata for a finished video - title options, description, chapters, tags, settings, pinned comment and stock credits - into <project>/upload/youtube-metadata.md, beside title-named copies of the finals and captions.srt, so the upload/ folder holds everything needed in YouTube Studio, then hands off to social_posts for the other platforms. Runs automatically at the end of every final render from edit_video / edit_video_plus; also use when the user asks for titles, descriptions, chapters, tags, "YouTube metadata" or files to upload. Accepts one project name or "all".
+description: Write YouTube metadata for a finished video - title options, description, chapters, tags, settings, pinned comment and stock credits - into <project>/upload/youtube-metadata.md, beside title-named copies of the finals and captions.srt, so the upload/ folder holds everything needed in YouTube Studio, then hands off to thumbnails (3 A/B-test thumbnails, long form) and social_posts for the other platforms. Runs automatically at the end of every final render from edit_video / edit_video_plus; also use when the user asks for titles, descriptions, chapters, tags, "YouTube metadata" or files to upload. Accepts one project name or "all".
 ---
 
 # youtube_metadata
@@ -15,6 +15,8 @@ $P/upload/
   <title 1> (edited).mp4         copy of final_edited.mp4
   <title 1> (plain).mp4          copy of final.mp4
   captions.srt                   copy of build/captions.srt
+  thumbnails/ + thumbnails.md    3 A/B-test thumbnails (Step 4, the thumbnails skill)
+  social-posts.md                posts for the other platforms (Step 5, social_posts)
 ```
 
 ```
@@ -111,8 +113,8 @@ of tools/products said on camera, the topic, the format.
 
 **Settings.** Category, audience ("Not made for kids" unless it clearly
 is), language, and which file to upload as captions (`captions.srt`, in
-the same folder). Long form also gets a
-3–5 word thumbnail text idea. Shorts get the "related video" to link.
+the same folder). Shorts get the "related video" to link. (Thumbnails are
+Step 4.)
 
 **Pinned comment** (long form). One question the video itself asks the
 viewer, so the pin carries on the conversation.
@@ -148,7 +150,17 @@ cp "$P/build/captions.srt" "$P/upload/captions.srt"
   checking what they are. Never delete `youtube-metadata.md` there.
 - A re-render doesn't update `upload/`. Re-run this step after new finals.
 
-## Step 4 - social posts
+## Step 4 - thumbnails
+
+For a long-form project, run `/thumbnails <project_name>` straight away,
+without asking. It writes three A/B-test thumbnails to
+`$P/upload/thumbnails/` and the ideas behind them to
+`$P/upload/thumbnails.md`, designed against title 1 from this file. Skip
+`_short` projects: Shorts can't run Test & Compare. For `all`, run
+`/thumbnails all`. If thumbnails already exist and the edit only changed
+slightly, keep them; they come from the raw footage, not the render.
+
+## Step 5 - social posts
 
 Then run `/social_posts <project_name>` straight away, without asking. It
 writes `$P/upload/social-posts.md` (X, Reddit, Threads, Instagram, LinkedIn,
@@ -161,5 +173,6 @@ Per video, in a table: title 1 and the `upload/` filenames. Then list
 anything the user still has to do in YouTube Studio (e.g. pick the Shorts
 related video) and anything you had to judge (e.g. a list video where the
 speaker's count doesn't match the items).
-Add the social_posts report below it. Don't paste the full metadata or the
+Add the thumbnails report (the three picks) and the social_posts report
+below it. Don't paste the full metadata or the
 posts into chat; point to the files.

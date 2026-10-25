@@ -77,8 +77,8 @@ claude
 ```
 
 The skills load as project skills (`/edit_video`, `/edit_video_plus`,
-`/youtube_metadata`, `/social_posts` and its `/post_*` platform skills,
-`/unslop`) and your
+`/youtube_metadata`, `/thumbnails`, `/social_posts` and its `/post_*`
+platform skills, `/unslop`) and your
 projects go in `videos/` inside the clone.
 
 ## Platforms
@@ -139,6 +139,21 @@ Claude), run `/youtube_metadata my_topic_long` (or `all`) yourself to
 refresh it. It writes an `upload/` folder with everything YouTube Studio needs: `youtube-metadata.md`
 (titles, description, chapters, tags, credits), title-named copies of the
 finals and `captions.srt`.
+
+### Thumbnails
+
+For long-form videos, `/thumbnails` makes three thumbnails for YouTube
+Studio's **Test & Compare**, which shows each to a share of viewers and keeps
+the one that earns the most watch time. It lists 10 ideas drawn from the
+video, such as the number the speaker says, a before/after, a screenshot
+that proves the point, a tool logo or a mistake stamp. It scores each 1-10
+in `upload/thumbnails.md` and renders the best three, each a different kind
+of idea, to `upload/thumbnails/A.jpg`, `B.jpg` and `C.jpg` at 3840x2160.
+`thumbnail.py` finds the best face frames (Apple Vision on macOS), takes
+full-resolution stills from the camera files, cuts the speaker out and
+checks each thumbnail at phone-feed and sidebar size. The rules, archetypes
+and the channels they come from are in `skills/thumbnails/SKILL.md`. It needs
+the Remotion engine (`tools/setup.sh --motion remotion`).
 
 ### Posts for the other platforms
 
@@ -254,6 +269,7 @@ pipeline by hand.
 | `retime.py` | move overlay and caption-fix times after an EDL change |
 | `export.py` | timeline for Resolve / Final Cut |
 | `postcheck.py` | character limits, fold preview and dash check for `upload/social-posts.md` |
+| `thumbnail.py` | face-frame scan, full-res stills, speaker cut-outs (`vision.swift`), thumbnail render and feed-size check |
 
 ## Limitations
 
