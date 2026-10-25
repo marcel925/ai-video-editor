@@ -25,9 +25,15 @@ also use the edited-only layers:
   split   {"type": "split", "file", "start", "end", "side": "right",
            "focus": 0.5, "from": 0}
   motion  {"type": "motion", "comp", "start", "end", "props": {...}}
+  pip     {"type": "pip", "file", "start", "end", "from": 0, "x": 0.5,
+           "y": 0.62, "width": 0.92, "aspect": 2.3, "radius": 0.07,
+           "audio": 0.0}   - an inset clip or still with rounded corners,
+           centred on (x, y); "audio" > 0 plays the clip's own sound
   flash   {"type": "flash", "at", "duration": 0.25}
   sfx     {"type": "sfx", "at", "name": "whoosh" | "file": ..., "volume"}
-plus top-level "auto_zoom": {"scale": 1.12, "min_hold": 4} and
+plus top-level "auto_zoom": {"scale": 1.12, "min_hold": 4}, "base_focus":
+[x, y] (where the profile's edited.base_zoom crop centres; default
+[0.5, 0.3]) and
 "music": {"file", "volume": 0.12, "duck": true}. See the edit_video skill.
 """
 from __future__ import annotations
@@ -235,11 +241,18 @@ def auto_zooms(spec: dict, timeline: dict, explicit: list[dict],
     return zooms
 
 
-def zoom_filter(zooms: list[dict], width: int, height: int, fps: int) -> str:
+def zoom_filter(zooms: list[dict], width: int, height: int, fps: int,
+                base: float = 1.0, base_focus=(0.5, 0.3)) -> str:
     """One zoompan over the whole base, with the zoom as a piecewise function
     of time. A single pass - splitting the base per zoom would make ffmpeg
-    buffer every frame ahead of each window."""
-    z_expr, x_expr, y_expr = "1", "0", "0"
+    buffer every frame ahead of each window.
+
+    `base` is the framing outside every zoom window: a style that holds one
+    steady crop on the face (profile `edited.base_zoom`) rather than the
+    full frame."""
+    bx, by = base_focus
+    z_expr = f"{base:.4f}"
+    x_expr, y_expr = f"(iw-iw/zoom)*{bx}", f"(ih-ih/zoom)*{by}"
     for zm in sorted(zooms, key=lambda z: z["start"], reverse=True):
         s, e = float(zm["start"]), float(zm["end"])
         target = float(zm.get("scale", 1.15))
@@ -363,6 +376,67 @@ def build_cutaway(ov: dict, n: int, width: int, height: int, fps: int,
     return chain
 
 
+def rounded_mask(w: int, h: int, radius: int, out: Path) -> Path:
+    """A white rounded rectangle on black, for alphamerge."""
+    from PIL import Image, ImageDraw
+    if not out.exists():
+        im = Image.new("L", (w * 4, h * 4), 0)
+        ImageDraw.Draw(im).rounded_rectangle([0, 0, w * 4 - 1, h * 4 - 1],
+                                             radius=radius * 4, fill=255)
+        im.resize((w, h), Image.LANCZOS).save(out)
+    return out
+
+
+def build_pip(ov: dict, n: int, width: int, height: int, fps: int,
+              root: Path, inputs: Inputs, tmpdir: Path) -> tuple[list[str], int, int, int]:
+    """An inset clip or still with rounded corners, output as [pip<n>].
+    Returns the chain, the overlay's x and y, and the media's input index
+    (its audio is mixed in when the layer asks for it)."""
+    start, duration = slot(ov)
+    path = resolve_file(ov, root)
+    idx = inputs.media(path, duration, fps, float(ov.get("from", 0)))
+    w = even(width * float(ov.get("width", 0.92)))
+    aspect = ov.get("aspect")
+    if aspect:
+        h = even(w / float(aspect))
+        geo = cover(w, h)
+    else:
+        geo = f"scale={w}:-2,setsar=1"
+        h = None
+    steps = [geo, "format=rgba"]
+    if path.suffix.lower() != ".png":
+        steps.insert(0, f"fps={fps}")
+    chain = [f"[{idx}:v]{','.join(steps)}[pm{n}]"]
+    if h is None:
+        from PIL import Image
+        if path.suffix.lower() in VIDEO_EXTS:
+            vs = next(s for s in ffprobe(path)["streams"] if s.get("codec_type") == "video")
+            sw, sh = int(vs["width"]), int(vs["height"])
+        else:
+            with Image.open(path) as im:
+                sw, sh = im.size
+        h = even(w * sh / sw)
+    radius = int(min(w, h) * float(ov.get("radius", 0.07)))
+    cur = f"pm{n}"
+    if radius > 0:
+        mask = rounded_mask(w, h, radius, tmpdir / f"mask_{w}x{h}_{radius}.png")
+        mi = inputs.add("-loop", "1", "-framerate", str(fps), "-t",
+                        f"{duration:.3f}", "-i", str(mask))
+        chain.append(f"[{mi}:v]format=gray,scale={w}:{h}[mk{n}]")
+        chain.append(f"[pm{n}][mk{n}]alphamerge[pr{n}]")
+        cur = f"pr{n}"
+    fade = float(ov.get("fade", 0.0))
+    post = []
+    if fade > 0 and duration > fade * 2:
+        post += [f"fade=t=in:st=0:d={fade}:alpha=1",
+                 f"fade=t=out:st={duration - fade:.3f}:d={fade}:alpha=1"]
+    post.append(f"setpts=PTS-STARTPTS+{start:.3f}/TB")
+    chain.append(f"[{cur}]{','.join(post)}[pip{n}]")
+    x = int(width * float(ov.get("x", 0.5)) - w / 2)
+    y = int(height * float(ov.get("y", 0.62)) - h / 2)
+    return chain, x, y, idx
+
+
 def build_flash(ov: dict, n: int, width: int, height: int, fps: int,
                 inputs: Inputs) -> tuple[list[str], float, float]:
     d = float(ov.get("duration", 0.25))
@@ -449,14 +523,26 @@ def voice_loudness(source: Path, cache_dir: Path) -> float:
 
 
 def build_audio(events: list[dict], music: dict | None, duration: float,
-                root: Path, inputs: Inputs, gain: float = 1.0) -> list[str]:
+                root: Path, inputs: Inputs, gain: float = 1.0,
+                clips: list[tuple[int, dict]] | None = None) -> list[str]:
     """Mix sound effects and an optional ducked music bed under the voice.
-    `gain` scales every level to the voice's actual loudness."""
+    `gain` scales every level to the voice's actual loudness. `clips` are
+    inset layers whose own sound plays (a song the speaker cues)."""
     import sfx as kit
     lib = kit.ensure()
     chain: list[str] = []
     voice = "0:a"
     mix: list[str] = []
+    for n, (idx, ov) in enumerate(clips or []):
+        start, dur = slot(ov)
+        vol = float(ov["audio"]) * gain
+        edge = min(0.08, dur / 4)
+        chain.append(f"[{idx}:a]aresample=48000,aformat=channel_layouts=stereo,"
+                     f"atrim=0:{dur:.3f},volume={vol:.3f},"
+                     f"afade=t=in:st=0:d={edge:.3f},"
+                     f"afade=t=out:st={dur - edge:.3f}:d={edge:.3f},"
+                     f"adelay={int(start * 1000)}:all=1[pa{n}]")
+        mix.append(f"[pa{n}]")
     if music:
         mpath = Path(music["file"])
         mpath = mpath if mpath.is_absolute() else root / mpath
@@ -615,7 +701,7 @@ def main() -> int:
     # nothing, and next to a graphic it collides with it - so it only shows
     # while the frame is otherwise just the speaker.
     busy = [(float(o["start"]), float(o["end"])) for o in overlays
-            if o.get("type") in ("broll", "split", "motion", "image")]
+            if o.get("type") in ("broll", "split", "motion", "image", "pip")]
     badges = [b for b in badges if not any(
         float(b["start"]) < e and s < float(b["end"]) for s, e in busy)]
 
@@ -629,6 +715,9 @@ def main() -> int:
     explicit_zooms = [o for o in overlays if o.get("type") == "zoom"]
     zooms = explicit_zooms + auto_zooms(spec, timeline, explicit_zooms,
                                         profile.get("edited", {}).get("auto_zoom"))
+    base_zoom = float(profile.get("edited", {}).get("base_zoom") or 1.0) if edited else 1.0
+    base_focus = spec.get("base_focus", [0.5, 0.3])
+    pips = [o for o in overlays if o.get("type") == "pip"]
     cutaways = [o for o in overlays if o.get("type") in ("broll", "split")]
     images = [o for o in overlays if o.get("type") in ("image", "motion")] + badges
     texts = [o for o in overlays if o.get("type") == "text"]
@@ -648,8 +737,8 @@ def main() -> int:
     inputs = Inputs(source)
     chain: list[str] = []
     label = "0:v"
-    if zooms:
-        chain.append(f"[0:v]{zoom_filter(zooms, width, height, fps)}[zb]")
+    if zooms or base_zoom > 1.0:
+        chain.append(f"[0:v]{zoom_filter(zooms, width, height, fps, base_zoom, base_focus)}[zb]")
         label = "zb"
 
     for n, ov in enumerate(cutaways):
@@ -659,6 +748,17 @@ def main() -> int:
         chain.append(f"[{label}][cut{n}]overlay=0:0:{between(start, end)}"
                      f":eof_action=pass[c{n}]")
         label = f"c{n}"
+
+    pip_audio: list[tuple[int, dict]] = []
+    for n, ov in enumerate(pips):
+        part, x, y, idx = build_pip(ov, n, width, height, fps, paths["root"],
+                                    inputs, tmpdir)
+        chain += part
+        chain.append(f"[{label}][pip{n}]overlay={x}:{y}:"
+                     f"{between(float(ov['start']), float(ov['end']))}:eof_action=pass[p{n}]")
+        label = f"p{n}"
+        if float(ov.get("audio") or 0) > 0:
+            pip_audio.append((idx, ov))
 
     chain += build_image_graph(images, width, height, paths["root"], inputs, fps)
     for n, ov in enumerate(images):
@@ -696,10 +796,11 @@ def main() -> int:
         label = "vout"
 
     audio_map, audio_codec = ["-map", "0:a?"], ["-c:a", "copy"]
-    if events or music:
+    if events or music or pip_audio:
         lufs = voice_loudness(source, tmpdir)
         gain = 10 ** ((lufs + 14.0) / 20)
-        chain += build_audio(events, music, duration, paths["root"], inputs, gain)
+        chain += build_audio(events, music, duration, paths["root"], inputs, gain,
+                             pip_audio)
         audio_map, audio_codec = ["-map", "[aout]"], ["-c:a", "aac", "-b:a", "192k"]
 
     out = Path(args.out) if args.out else paths["root"] / (
@@ -717,6 +818,7 @@ def main() -> int:
         if edited:
             encode += SDR_TAGS
         extra = (f", {len(zooms)} zoom(s), {len(cutaways)} cutaway(s), "
+                 f"{len(pips)} inset(s), "
                  f"{len(motions)} motion, {len(events)} sfx"
                  + (", music" if music else "")) if edited else ""
         info(f"burning {len(images)} image(s), {len(texts)} title(s)"

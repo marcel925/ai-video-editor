@@ -36,6 +36,16 @@ folder, `$PY`/`$T` as defined in `SKILL.md`.
   norm for talking-head video; a dissolve only marks a real scene change.
 - `source` + `start` + `end` - raw timestamps, for material with no speech
   (a screen recording, a silent demo).
+- `start_at` / `end_at` - a phrase inside the cut's first / last segment to
+  start on or end with (first match), as in `shorts.json`. Cuts on the word;
+  no timestamp typed.
+- `hold` - seconds of picture kept after the cut's last word, exempt from
+  pause trimming: a beat for an inserted song, a reaction.
+- `max_pause` - this cut's own pause limit, overriding the profile (keep
+  the gesture between the words of a spoken list).
+- Top-level `"tight_edges": true` cuts every edge on its first and last
+  word instead of the loose segment boundary - for edits that skip so much
+  that a neighbouring word would leak in at the joins.
 
 `drop` and `source` are the only places raw times belong. List only the
 segments that survive: a cut whose ids skip a segment is split at the gap,

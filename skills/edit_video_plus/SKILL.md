@@ -169,6 +169,7 @@ you, next session) can read the edit.
 | `split` | b-roll on one half, speaker on the other | `file`, `from`, `side` = where the **b-roll** goes: `left`/`right` (16:9), `top`/`bottom` (9:16, default top), `focus` = speaker crop centre (x for 16:9, y for 9:16) |
 | `zoom` | reframe the speaker | `scale`, `focus` `[x, y]`, `ease` (seconds to reach it; 0 = hard punch), `drift` (extra zoom across the window, a slow push) |
 | `motion` | a Remotion component (below) | `comp`, `props`, optional `transparent`, `captions` |
+| `pip` | an inset over the speaker, rounded or square (a song cover held up, a clip across the chest) | `file`, `x`/`y` (centre), `width`, `aspect` (crops to it), `radius` (fraction of the short side), `from`, `audio` (> 0 plays the clip's own sound at that level), `fade` |
 | `image`, `text`, `box` | as in the plain skill | |
 | `sfx` | a sound | `at`, `name` or `file`, `volume` |
 

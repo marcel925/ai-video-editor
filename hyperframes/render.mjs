@@ -41,18 +41,28 @@ await build({
   alias: {
     remotion: path.join(here, 'shim', 'remotion.tsx'),
     '@remotion/google-fonts/Inter': path.join(here, 'shim', 'inter.ts'),
+    '@remotion/google-fonts/Montserrat': path.join(here, 'shim', 'montserrat.ts'),
+    '@remotion/google-fonts/TikTokSans': path.join(here, 'shim', 'tiktok-sans.ts'),
     react: mod('react'),
     'react-dom': mod('react-dom'),
   },
 });
 
 copyFileSync(mod('gsap/dist/gsap.min.js'), path.join(lib, 'gsap.min.js'));
-const fontDir = mod('@fontsource/inter/files');
+// every face a component asks its loadFont for, served from disk
+const FONTS = [
+  ['Inter', 'inter', [500, 700, 800, 900]],
+  ['Montserrat', 'montserrat', [600, 700, 800, 900]],
+  ['TikTok Sans', 'tiktok-sans', [500, 600]],
+];
 const faces = [];
-for (const weight of [500, 700, 800, 900]) {
-  const file = `inter-latin-${weight}-normal.woff2`;
-  copyFileSync(path.join(fontDir, file), path.join(lib, file));
-  faces.push(`@font-face{font-family:'Inter';font-style:normal;font-weight:${weight};font-display:block;src:url(${file}) format('woff2')}`);
+for (const [family, pkg, weights] of FONTS) {
+  const fontDir = mod(`@fontsource/${pkg}/files`);
+  for (const weight of weights) {
+    const file = `${pkg}-latin-${weight}-normal.woff2`;
+    copyFileSync(path.join(fontDir, file), path.join(lib, file));
+    faces.push(`@font-face{font-family:'${family}';font-style:normal;font-weight:${weight};font-display:block;src:url(${file}) format('woff2')}`);
+  }
 }
 writeFileSync(path.join(lib, 'fonts.css'), faces.join('\n') + '\n');
 

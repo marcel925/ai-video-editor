@@ -279,7 +279,10 @@ def resolve_cuts(edl: dict, segments: list[dict], sources: list[dict],
             for piece_n, (piece_start, piece_end) in enumerate(pieces):
                 for sub_n, part in enumerate(
                         compress_pauses(piece_start, piece_end,
-                                        source["silences"], max_pause,
+                                        source["silences"],
+                                        # a cut may keep longer pauses: the
+                                        # beats of a list, a gesture
+                                        float(cut.get("max_pause", max_pause)),
                                         min_saving)):
                     # anything after the first is held apart on purpose, so
                     # merge_adjacent must not fuse it back together
@@ -290,6 +293,13 @@ def resolve_cuts(edl: dict, segments: list[dict], sources: list[dict],
                                              and part[0] == piece_start))
             trimmed += sum(b - a for a, b in pieces) \
                 - sum(b - a for a, b, *_ in parts)
+            # `hold`: keep N seconds of picture after the last word - a beat
+            # for an inserted song or a reaction - which pause trimming
+            # would otherwise take straight back out
+            if span_n == len(spans) - 1 and float(cut.get("hold", 0)) > 0 and parts:
+                tail = parts[-1][1]
+                parts.append((tail, min(source["duration"], tail + float(cut["hold"])),
+                              False, False))
             for sub_n, (sub_start, sub_end, pause_split, exact) in enumerate(parts):
                 first = span_n == 0 and sub_n == 0
                 resolved.append({
@@ -530,6 +540,25 @@ def main() -> int:
 
     focus_file = paths["build"] / "focus.json"
     focus_map = load_json(focus_file) if focus_file.exists() else {}
+
+    # `start_at` / `end_at` cut on a phrase inside a segment - one word of a
+    # list said three times, say - with every time read off the transcript.
+    # `"tight_edges": true` cuts every edge on its first and last word, for
+    # an edit that skips so much that loose segment ends would leak
+    tight = bool(edl.get("tight_edges"))
+    anchored = lambda c: c.get("segments") and (tight or c.get("start_at") or c.get("end_at"))
+    if any(anchored(c) for c in edl["cuts"]):
+        from shorts import edge_anchors
+        by_id = {s["id"]: s for s in segments}
+        order = {s["id"]: i for i, s in enumerate(segments)}
+        by_name = {s["name"]: s for s in sources}
+        warnings: list[str] = []
+        edl = {**edl, "cuts": [
+            edge_anchors(c, by_id, order, paths, by_name, warnings)
+            if anchored(c) else c
+            for c in edl["cuts"]]}
+        for w in warnings:
+            info(f"  note: {w}")
 
     cuts = merge_adjacent(resolve_cuts(edl, segments, sources, profile))
     width, height, fps = geometry(profile, args.quality)
