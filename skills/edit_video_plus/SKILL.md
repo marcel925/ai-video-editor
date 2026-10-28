@@ -1,6 +1,6 @@
 ---
 name: edit_video_plus
-description: Make the more-edited version of a finished talking-head cut - b-roll from Pexels/Pixabay, motion graphics (Remotion or HyperFrames) (title cards, counting numbers, lists, logos, screenshots), split screens, punch-in zooms and sound effects - rendered beside the plain version as preview_edited.mp4 so the two can be compared. Use after /edit_video has produced a cut, or when the user asks for a "more edited", "b-roll", "more engaging" or "both versions" edit.
+description: Make the more-edited version of a finished talking-head cut - b-roll from Pexels/Pixabay, motion graphics (Remotion or HyperFrames) (title cards, counting numbers, lists, logos, screenshots), split screens, punch-in zooms and sound effects - rendered beside the plain version as preview_edited.mp4 so the two can be compared. Runs automatically inside /edit_video once the cut passes its checks, before the first pause; use directly after an existing cut, or when the user asks for a "more edited", "b-roll", "more engaging" or "both versions" edit.
 ---
 
 # edit_video_plus
@@ -13,6 +13,12 @@ both and pick.
 ```
 /edit_video_plus <project_name>
 ```
+
+`/edit_video` runs this skill itself, straight after the plain cut and its
+overlay additions, in the same run: the user sees both versions at the first
+pause, never a stop in between to ask what to add. Decide every layer
+yourself, make every asset yourself (below), and explain the choices in the
+report with an offer to change any of them.
 
 Read `best_practices.md` (next to this file) before the first edit of a
 session. It holds the edit budget and the targets per form.
@@ -44,6 +50,10 @@ cut changes; run `retime.py $P` to move every layer (and caption fix) onto
 the new one, then re-check the layers it reports and the review sheet.
 
 ## Pipeline
+
+**Step 0: `bash $T/update.sh`** - pull the latest skills and tools from
+GitHub before anything else (see "Update first" in `edit_video`). On exit 2
+stop and ask the user; if it pulled changes to this skill, re-read it.
 
 ```bash
 $PY $T/words.py   $P                 # sentence per line, output times
@@ -86,6 +96,21 @@ than starting over.
    list `assets/`. The user's own screenshots and recordings are the best
    material in the project. Use every one that fits, upgraded (a screenshot
    becomes a `ScreenshotCard`, a text title becomes a `TitleCard`).
+
+### Making the assets
+
+Nothing waits on the user for material. For each beat that needs one:
+
+- **Browser screenshots** (the Chrome tools) of the real thing the speaker
+  names: a product's homepage, pricing page, docs, a dashboard demo, an App
+  Store listing. Crop to what matters, save as PNG in `assets/screens/`,
+  and present it as a `ScreenshotCard` (frame `browser` or `phone`). Public
+  pages only: never anything behind the user's login or with personal data.
+- **Logos** from the product's own site or press kit (SVG/PNG), into
+  `assets/logos/`, for `LogoPop`.
+- **Motion graphics** for numbers, lists, loops, comparisons and section
+  cards: no asset needed.
+- **Stock** for concrete things with nothing real to show (Step 3).
 
 ## Step 2 - plan beat by beat
 
@@ -280,7 +305,9 @@ ebur128`): the integrated figure should barely move.
 Tell the user, per video:
 
 - where both files are (`preview.mp4` vs `preview_edited.mp4`) and that they
-  share the exact same cut
+  share the exact same cut: one per line, a label then the full absolute
+  path, so the user can tap it open from the chat. No table, no shortened
+  paths (see `edit_video`, "Reporting the cut")
 - the pacing numbers from `review.py`, including the off-face share against
   the budget
 - a short list of the beats by kind (how many cutaways, cards, graphics), and
@@ -290,8 +317,10 @@ Tell the user, per video:
 - that `assets/stock/CREDITS.md` has the credits for the description
 - that music is not included unless they supply a track
 
-Then wait. Their notes ("drop the crowd shot", "the stamp is too much") are
-edits to `overlays_edited.json` and a `finish.py` re-run.
+When `/edit_video` ran this skill, this report goes out together with the
+plain cut's report, at the one pause. Then wait. Their notes ("drop the crowd
+shot", "the stamp is too much") are edits to `overlays_edited.json` and a
+`finish.py` re-run.
 
 ## Rules
 

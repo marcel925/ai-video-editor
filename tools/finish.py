@@ -31,7 +31,9 @@ also use the edited-only layers:
            centred on (x, y); "audio" > 0 plays the clip's own sound
   flash   {"type": "flash", "at", "duration": 0.25}
   sfx     {"type": "sfx", "at", "name": "whoosh" | "file": ..., "volume"}
-plus top-level "auto_zoom": {"scale": 1.12, "min_hold": 4}, "base_focus":
+plus top-level "auto_zoom": {"scale": 1.12, "min_hold": 4}, "clip_zoom":
+{"rate": 0.012, "max": 0.08} (each clip pushes in slowly from the base
+framing and snaps back out at the next clip), "base_focus":
 [x, y] (where the profile's edited.base_zoom crop centres; default
 [0.5, 0.3]) and
 "music": {"file", "volume": 0.12, "duck": true}. See the edit_video skill.
@@ -106,6 +108,8 @@ def build_text_filters(overlays: list[dict], width: int, height: int,
         parts = [
             f"drawtext=fontfile={escape_path(font)}",
             f"textfile={escape_path(tfile)}",
+            # a textfile is still expanded: "70%" would read as a %{...} code
+            "expansion=none",
             f"fontsize={max(12, int(height * float(style['size'])))}",
             f"fontcolor={ov.get('color', 'white')}",
             f"x=(w-text_w)*{fx}", f"y=(h-text_h)*{fy}",
@@ -241,6 +245,29 @@ def auto_zooms(spec: dict, timeline: dict, explicit: list[dict],
     return zooms
 
 
+def clip_zooms(spec: dict, timeline: dict, explicit: list[dict], base: float,
+               base_focus) -> list[dict]:
+    """`"clip_zoom": {"rate": 0.012, "max": 0.08}`: every clip of the cut
+    starts on the base framing and pushes in slowly while it plays (`rate`
+    of zoom per second, at most `max`), so each jump cut snaps back out.
+    Clips an explicit zoom already covers are left alone."""
+    cfg = spec.get("clip_zoom")
+    if not cfg:
+        return []
+    cfg = cfg if isinstance(cfg, dict) else {}
+    rate, top = float(cfg.get("rate", 0.012)), float(cfg.get("max", 0.08))
+    skip = [(float(o["start"]), float(o["end"])) for o in explicit]
+    bounds = [c["out_start"] for c in timeline["cuts"]] + [timeline["duration"]]
+    zooms = []
+    for s, e in zip(bounds, bounds[1:]):
+        if e - s < 0.2 or any(s < xe and xs < e for xs, xe in skip):
+            continue
+        zooms.append({"type": "zoom", "start": s, "end": e - 0.001, "scale": base,
+                      "drift": min(rate * (e - s), top), "focus": list(base_focus),
+                      "smooth": True})
+    return zooms
+
+
 def zoom_filter(zooms: list[dict], width: int, height: int, fps: int,
                 base: float = 1.0, base_focus=(0.5, 0.3)) -> str:
     """One zoompan over the whole base, with the zoom as a piecewise function
@@ -269,7 +296,10 @@ def zoom_filter(zooms: list[dict], width: int, height: int, fps: int,
         y_expr = f"if({cond},(ih-ih/zoom)*{fy},{y_expr})"
     # fps= first: zoompan re-stamps frames by count, so a cut with gaps in
     # its timestamps would slide out of sync with the audio without it
-    return (f"fps={fps},zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
+    # a slow continuous zoom judders when zoompan snaps its crop to whole
+    # pixels at frame size: give it twice the pixels to snap to
+    up = "scale=iw*2:ih*2," if any(z.get("smooth") for z in zooms) else ""
+    return (f"fps={fps},{up}zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
             f":d=1:s={width}x{height}:fps={fps}")
 
 
@@ -717,6 +747,7 @@ def main() -> int:
                                         profile.get("edited", {}).get("auto_zoom"))
     base_zoom = float(profile.get("edited", {}).get("base_zoom") or 1.0) if edited else 1.0
     base_focus = spec.get("base_focus", [0.5, 0.3])
+    zooms += clip_zooms(spec, timeline, zooms, base_zoom, base_focus)
     pips = [o for o in overlays if o.get("type") == "pip"]
     cutaways = [o for o in overlays if o.get("type") in ("broll", "split")]
     images = [o for o in overlays if o.get("type") in ("image", "motion")] + badges

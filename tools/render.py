@@ -162,6 +162,31 @@ def snap_drops(drops: list, silences: list, label: str) -> list[tuple[float, flo
     return out
 
 
+WORD_CAP = 1.0           # longest a single word may take, seconds
+NONSPEECH_MARGIN = 0.1   # word timings drift; stay this far off each word
+
+
+def nonspeech_gaps(words: list[dict], min_gap: float) -> list[tuple[float, float]]:
+    """Stretches between words where nobody is speaking, loud or not.
+
+    The silence map only knows quiet. A cough, a laugh off-mic, a chair
+    creak or the speaker reaching for the camera is loud, so it survives
+    pause trimming and sits in the cut as a few seconds of nothing. The
+    transcript knows better: no words were said there. The recogniser
+    stretches a sentence-final word across the pause that follows it
+    ("them." running 9s), so each word counts as speech for at most
+    WORD_CAP. Holes the recogniser skipped are found and re-transcribed by
+    transcribe.py before this runs, and listen.py hears anything that was
+    lost, so a gap here really is a gap."""
+    spans = sorted((w["s"], min(w["e"], w["s"] + WORD_CAP)) for w in words)
+    gaps = []
+    for (_, prev_end), (next_start, _) in zip(spans, spans[1:]):
+        a, b = prev_end + NONSPEECH_MARGIN, next_start - NONSPEECH_MARGIN
+        if b - a >= min_gap:
+            gaps.append((a, b))
+    return gaps
+
+
 def compress_pauses(start: float, end: float, silences: list,
                     max_pause: float, min_saving: float = 0.4
                     ) -> list[tuple[float, float]]:
@@ -221,6 +246,19 @@ def resolve_cuts(edl: dict, segments: list[dict], sources: list[dict],
     trimmed = 0.0
     excised = 0.0
 
+    # Pauses to trim = measured silence + stretches with no words in them
+    # (coughs, laughs, rustling), per source. `source` cuts have no words,
+    # so they keep the plain silence map.
+    quiet: dict[str, list] = {}
+    if profile["audio"].get("trim_nonspeech", True):
+        words_by_source: dict[str, list] = {}
+        for seg in segments:
+            words_by_source.setdefault(seg["source"], []).extend(seg.get("words") or [])
+        for src in sources:
+            gaps = nonspeech_gaps(words_by_source.get(src["name"], []),
+                                  max_pause + min_saving)
+            quiet[src["name"]] = coalesce(list(src["silences"]) + gaps)
+
     resolved: list[dict] = []
     for n, cut in enumerate(edl["cuts"], 1):
         if cut.get("segments"):
@@ -275,11 +313,15 @@ def resolve_cuts(edl: dict, segments: list[dict], sources: list[dict],
                 die(f"cut #{n} has nothing left after its drop ranges")
             excised += (end - start) - sum(b - a for a, b in pieces)
 
+            # `keep_nonspeech`: a laugh or a gesture the cut is about
+            pauses = (quiet.get(source["name"], source["silences"])
+                      if cut.get("segments") and not cut.get("keep_nonspeech")
+                      else source["silences"])
             parts = []
             for piece_n, (piece_start, piece_end) in enumerate(pieces):
                 for sub_n, part in enumerate(
                         compress_pauses(piece_start, piece_end,
-                                        source["silences"],
+                                        pauses,
                                         # a cut may keep longer pauses: the
                                         # beats of a list, a gesture
                                         float(cut.get("max_pause", max_pause)),

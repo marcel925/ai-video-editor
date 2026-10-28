@@ -169,7 +169,9 @@ For `all`, run `/social_posts all` after the last project.
 
 ## Report
 
-Per video, in a table: title 1 and the `upload/` filenames. Then list
+Per video: title 1, then each file in `upload/` on its own line with its
+full absolute path, so the user can tap it open from the chat. Never put
+file paths in a table or shorten them. Then list
 anything the user still has to do in YouTube Studio (e.g. pick the Shorts
 related video) and anything you had to judge (e.g. a list video where the
 speaker's count doesn't match the items).

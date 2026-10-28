@@ -19,7 +19,8 @@ audio:
   snap_reach: 1.2       # how far to hunt for a pause to cut inside
   max_pause: 0.55         # longest silence left inside a cut, seconds
   min_pause_saving: 0.20  # don't bother splitting to save less than this
-  silence_noise_db: -32
+  silence_noise_db: -45   # below speech (phone mics sit at -38..-44 dB), above the room floor (~-60)
+  trim_nonspeech: true    # also trim stretches with no words: coughs, laughs, rustling
   silence_min_duration: 0.20
   denoise: false
   loudnorm: true

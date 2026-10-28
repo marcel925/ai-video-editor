@@ -166,8 +166,17 @@ def motion_file(build: Path, ov: dict, profile: dict) -> Path:
     return build / "motion" / f"{ov['comp']}_{key}{ext}"
 
 
+def source_file(rel: str, root: Path) -> Path | None:
+    """A prop's file: in the project, or a shared asset named from the repo
+    root (assets/<...>/<file>), such as a logo every project reuses."""
+    for base in (root, ROOT):
+        if (base / rel).is_file():
+            return base / rel
+    return None
+
+
 def referenced_files(value, root: Path) -> list[str]:
-    """Prop values that name a file in the project (logos, screenshots)."""
+    """Prop values that name a file in the project or in the repo's assets/."""
     found = []
     if isinstance(value, dict):
         for v in value.values():
@@ -175,7 +184,7 @@ def referenced_files(value, root: Path) -> list[str]:
     elif isinstance(value, list):
         for v in value:
             found += referenced_files(v, root)
-    elif isinstance(value, str) and "/" in value and (root / value).is_file():
+    elif isinstance(value, str) and "/" in value and source_file(value, root):
         found.append(value)
     return found
 
@@ -215,7 +224,7 @@ def main() -> int:
         wanted.add(out.name)
         for rel in referenced_files(ov.get("props", {}), paths["root"]):
             dst = public / rel
-            src = paths["root"] / rel
+            src = source_file(rel, paths["root"])
             if not dst.exists() or dst.stat().st_mtime < src.stat().st_mtime:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)

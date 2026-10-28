@@ -1,6 +1,6 @@
 ---
 name: edit_video
-description: Edit raw talking-head recordings into a publishable video. Transcribes every take, picks the good ones, discards failed takes, false starts and double takes, and assembles the cut with ffmpeg. Produces the plain version; the more-edited version follows via edit_video_plus. On request it also cuts vertical shorts (3 by default) out of a long-form edit. Use when the user asks to edit a video, cut footage, assemble takes, make a short, clip shorts from a long video, or add captions/titles/images to an edit.
+description: Edit raw talking-head recordings into a publishable video. Transcribes every take, picks the good ones, discards failed takes, false starts and double takes, and assembles the cut with ffmpeg. One run produces both versions before the first pause: the plain cut with its overlays, and the more-edited version via edit_video_plus. On request it also cuts vertical shorts (3 by default) out of a long-form edit. Use when the user asks to edit a video, cut footage, assemble takes, make a short, clip shorts from a long video, or add captions/titles/images to an edit.
 ---
 
 # edit_video
@@ -40,6 +40,21 @@ Shell variables do not persist between calls, so repeat it each time. If those
 values still read as literal `${...}` placeholders, the skill was loaded from
 a clone of the repository: use `PY=.venv/bin/python; T=tools` from the repo
 root instead.
+
+**Update first, every time.** Before the first tool of an edit (any
+`edit_video*` skill), pull the latest skills and tools from GitHub, since
+they may have been changed from another machine or session:
+
+```bash
+bash "$T/update.sh"
+```
+
+It fast-forwards the clone and keeps local uncommitted edits; a plugin
+install or no network is skipped. If it stops with exit 2 (new commits
+touch files with local edits, or the branch diverged), tell the user what
+it printed and ask before going on - never stash, reset or discard their
+changes yourself. If it pulled commits that change this skill or the style
+skill in use, re-read them before editing.
 
 **First run.** If `$PY` does not exist, the tools are not set up. Tell the
 user, then (with their go-ahead, since it installs ffmpeg/Node on macOS via
@@ -108,11 +123,19 @@ Every check before it reads the transcript; this one hears the render. Each
 - `captioned but not heard`: the cut clips what the captions promise.
 
 It also lists phrases *heard* twice: compare with `words.py --repeats`; one
-the transcript missed is a hidden retake. The cut is not ready to show until
-`listen.py` says `heard = captioned`. Then:
+the transcript missed is a hidden retake. The cut is not ready until
+`listen.py` says `heard = captioned` (or every remaining line is shown to be
+recogniser noise, see below). Then **look at the cut**: a strip of frames
+across every stretch where the speaker is not talking (`words.py` gaps over
+~1s) shows a cough, a reach for the camera or someone walking in, which no
+audio check catches. Cut it.
+
+Then polish it, in the same run, without stopping to ask:
 
 ```bash
+#   write $P/build/overlays.json      (see "Overlay additions")
 $PY $T/finish.py   $P --quality preview
+#   then run the whole edit_video_plus pipeline on $P -> preview_edited.mp4
 ```
 
 With `shorts`, pick them and render the drafts now (see "Shorts from the
@@ -122,8 +145,12 @@ long form"):
 $PY $T/shorts.py   render $P --quality preview    # -> $P/shorts/<slug>/preview.mp4
 ```
 
-Show the user `$P/preview.mp4` (and the draft shorts) with the report, and
-**wait for notes**. Only after they approve:
+**The first pause comes only now.** Show the user both `$P/preview.mp4` (the
+cut with its overlay additions) and `$P/preview_edited.mp4` (the edited
+version), and the draft shorts, with the report, and **wait for notes**.
+Never stop between the cut and the polish to ask which overlays they want:
+add them, explain them, and offer to change any of them. Only after they
+approve:
 
 ```bash
 $PY $T/render.py   $P --quality final
@@ -147,11 +174,14 @@ that changed.
 ## Two versions of every video
 
 Every project gets two edits of the **same cut**, so the user can compare:
-the plain one here (titles, a few images) and the edited one from
-`edit_video_plus` (b-roll, graphics, zooms, sound). Settle the cut on the
-plain version first, then continue with `edit_video_plus` unless the user
-asked for plain only. Never start the edited version while the EDL is still
-changing: every time in it hangs off the cut.
+the plain one here (the cut plus its overlay additions: titles, chapter
+cards, a few images) and the edited one from `edit_video_plus` (b-roll,
+graphics, zooms, sound). Both are made in the first run, one after the
+other, and shown together; skip `edit_video_plus` only when the user asked
+for plain only. Finish the cut first (every check passed) before starting
+either polish: every time in them hangs off the cut. When a note later
+changes the EDL, run `retime.py $P`: it moves every overlay layer of both
+versions onto the new cut.
 
 ## The editorial pass
 
@@ -169,6 +199,52 @@ payments, use Y") can match without being retakes; keep them all and say so.
 **Discard on sight.** `~filler` segments, false starts, self-corrections and
 everything between the flub and the restart, setup chatter ("is this
 recording"), and tangents off the topic.
+
+**Cut hard.** Every second has to earn its place; when in doubt, cut.
+
+**No empty clips.** Every stretch of the cut carries clear spoken words that
+belong in the video. Anything else goes, whether or not it is silent:
+
+- pauses, hesitations and "uh... so..." run-ups before the sentence starts
+- mumbled, trailing or unclear speech, and a bad take of a line, even when
+  it is the only take (cut the sentence; a missing line beats a broken one)
+- talking to someone else: the camera operator, a person in the room, a
+  phone call, a word to an AI assistant, any language other than the
+  video's
+- coughs, sneezes, throat-clearing, laughing off-mic, drinking, sighing
+- the speaker reaching for the camera, checking notes or a laptop, walking
+  in or out of frame, setting up
+
+These hide in two places. Whole segments (`segments.md` shows them: short,
+off-topic, foreign-language, garbled or `~filler`): leave them out of the
+EDL. And inside a kept segment, mostly at its end, where the segment runs
+on past its last word: `"tight_edges": true` and the renderer's
+`trim_nonspeech` take those out, and the frame-strip check after `listen.py`
+confirms it.
+
+Beyond those, remove:
+
+- asides that do not serve the point being made (a cost aside inside a
+  "how to" tip, "I made the list somewhere", a joke that does not land)
+- a point restated in other words after it has landed: keep the better telling
+- wrap-up filler: "so yeah", "basically", "that's it for this one" on its own
+- bridges between sections ("alright, what else?", "next thing") once the
+  section structure is clear; keep at most one, and none in a short
+- anything the speaker says to the camera operator or themselves
+- non-speech: coughs, laughs off-mic, drinking, reaching for the camera,
+  long looks at notes. `render.py` trims stretches with no words in them
+  (`audio.trim_nonspeech`), so a cough inside a cut shrinks to a normal
+  pause on its own; a non-speech moment the cut needs (a laugh that is the
+  joke) gets `"keep_nonspeech": true` on its cut.
+
+Set `"tight_edges": true` at the top of the EDL when the edit skips many
+segments: every cut then starts on its first word and ends on its last, so
+nothing of a skipped neighbour (a cough, the first syllable of a dropped
+line) rides along on a loose segment boundary.
+
+A long-form cut usually keeps 60-75% of the spoken content. Much more
+than that, and the cut is probably too soft; say what you kept that you
+nearly cut.
 
 **Leave alone.** Do not remove individual "um"s from inside a good sentence;
 each removal is an audible chop. Cut whole segments.
@@ -289,40 +365,61 @@ Check the render first:
 
 Then tell the user:
 
+- **the videos first, one per line**: a short label, then the file's full
+  absolute path on its own line (`/Users/.../videos/<project>/preview.mp4`),
+  so it can be tapped open from the chat. Never put video paths in a table,
+  and never shorten them (`…/preview_edited.mp4`, `$P/...`). This goes for
+  every video handed over: plain, edited, shorts, finals.
 - runtime, and how much raw footage it came from
 - what you kept, in order, by `note`
 - **what you dropped and why**, especially every retake and double-take decision
 - anything you were unsure about, named so they can check it
-- **overlay proposals** (below). A report without them is unfinished.
+- **the overlay additions** (below), as a table, and the edited version's
+  report from `edit_video_plus`. A report without them is unfinished.
 
-The preview is a proposal, not a finished video.
+The previews are a proposal, not finished videos. End by offering to change,
+move or remove any addition, or the cut itself.
 
-## Suggesting polish
+## Overlay additions
 
-End every edit by proposing where to break the frame: 3-5 places in a short,
-5-10 in a long form. Write them to `$P/build/polish.md` and show them as a
-table the user can answer line by line:
+Break the frame in the plain version too: 3-5 places in a short, 5-10 in a
+long form, **added, not proposed**. Write them to `$P/build/overlays.json`,
+render with `finish.py`, and list them in the report and in
+`$P/build/polish.md` as a table the user can answer line by line:
 
 | # | at | for | what | why |
 |---|------|------|--------------------------------|--------------------------|
-| 1 | 0:41 | 4s | screenshot of the RevenueCat SDK | the product is named; show it |
-| 2 | 1:57 | 3s | reaction gif, exasperated | the "I ignored analytics" beat |
+| 1 | 0:41 | 4s | screenshot of the RevenueCat pricing page | the product is named; show it |
+| 2 | 1:57 | 3s | text: "I ignored analytics for 2 years" | the admission beat |
 
-- `at` is output-timeline time; it moves when the EDL changes.
+- `at` is output-timeline time (`words.py --find`); it moves when the EDL
+  changes (`retime.py`).
 - Pick moments the words point at: a named product, a quoted number, a
-  described before/after, a joke. Say concretely what the asset is.
-- Space them out, and suggest a length: 3-5s for a logo or title, 6-10s for
-  something with detail to read.
-- Vary the kind: **text** (enumerations, a quoted number, a defined term; no
-  asset needed, so lead with these and give the exact words), screenshot,
-  screen recording, stock footage, gif, chart or logo.
+  described before/after, a list. Say concretely what each one is.
+- Space them out: 3-5s for a logo or title, 6-10s for something with
+  detail to read.
+- Vary the kind: **text** (chapter cards for a spoken structure, a quoted
+  number, a defined term), screenshot, logo, stock still.
 
-Then stop and let the user choose. They drop files into `$P/assets/`; you
-turn their answers into `$P/build/overlays.json` and re-run `finish.py` only.
+Make every asset yourself, in this order, and save it to `$P/assets/`:
+
+1. the user's own files in `$P/assets/`, if they put any there
+2. **screenshots taken in the browser** (the Chrome tools): the product's
+   own site, pricing page, docs or dashboard, cropped to the part that
+   matters, for any named tool, product or website. Never a page behind
+   the user's login, and nothing with personal data on it.
+3. **motion graphics / rendered cards** (`motion.py`, a still from it, or a
+   generated PNG) for numbers, lists, diagrams and logos-as-text
+4. **stock** from Pexels/Pixabay (`stock.py`, keys in `.env`) for a concrete
+   thing with nothing real to show; credits land in `assets/stock/CREDITS.md`
+
+Then continue straight into `edit_video_plus`, which reuses these assets.
 
 ## Rules
 
 - Never invent a timestamp for spoken content. Segment ids only.
+- Hand over videos as lines of text, one per video, each with its full
+  absolute path, never in a table or abbreviated.
 - Always show a preview before the final. Ask before overwriting an existing
   `final.mp4`.
 - Never delete or modify anything in `raw_videos/`.
@@ -333,8 +430,11 @@ turn their answers into `$P/build/overlays.json` and re-run `finish.py` only.
   it moves overlay and caption-fix times onto the new cut. Then update the
   chapters in `upload/youtube-metadata.md`.
 - Read the generated `.srt` before finishing.
-- Finish every edit with overlay proposals, then make the edited version
-  with `edit_video_plus`. It never replaces the plain files.
+- Finish every cut with overlay additions and the edited version from
+  `edit_video_plus`, both before the first pause. Never stop between the cut
+  and the polish to ask. The edited version never replaces the plain files.
+- Cut hard: asides, restated points, bridges, wrap-up filler and non-speech
+  go unless the video needs them.
 - Never reword what the speaker actually said.
 - Every final render ends with `/youtube_metadata`, `/thumbnails` (long
   form) and `/social_posts`, run automatically. A project is not finished

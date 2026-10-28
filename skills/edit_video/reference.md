@@ -45,7 +45,13 @@ folder, `$PY`/`$T` as defined in `SKILL.md`.
   the gesture between the words of a spoken list).
 - Top-level `"tight_edges": true` cuts every edge on its first and last
   word instead of the loose segment boundary - for edits that skip so much
-  that a neighbouring word would leak in at the joins.
+  that a neighbouring word would leak in at the joins. Use it whenever
+  segments end in a cough, a reach for the camera or chatter.
+- `keep_nonspeech` - `true` keeps this cut's word-less stretches (a laugh
+  that is the joke, a demonstrated gesture). By default the renderer
+  (`audio.trim_nonspeech` in the profile) treats every stretch longer than
+  `max_pause` with no transcribed words in it like silence and trims it,
+  however loud it is: coughs, off-mic laughter, rustling, setting up.
 
 `drop` and `source` are the only places raw times belong. List only the
 segments that survive: a cut whose ids skip a segment is split at the gap,
