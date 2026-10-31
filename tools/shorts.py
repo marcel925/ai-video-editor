@@ -188,7 +188,12 @@ def edge_anchors(cut: dict, segments: dict, order: dict, paths: dict,
         # inside the first silence after the word instead.
         # The recognised onset can itself land a little late, so a silence
         # that starts just before it still counts as the one after the word.
+        # It can land early too, inside the pause *before* a short last word
+        # ("Bye."), so a silence that began well before the onset is that
+        # pause, not the one after.
         for a, b in silences:
+            if a < word["s"] - 0.3:
+                continue
             if b > word["s"] + 0.1 and a <= word["e"] + 0.05 and b - a >= 0.15:
                 return round(min(max(a, word["s"] + 0.1) + 0.12, b), 3)
         return round(word["e"] - 0.03, 3)

@@ -9,8 +9,8 @@ folder, `$PY`/`$T` as defined in `SKILL.md`.
 {
   "profile": "long",
   "cuts": [
-    {"segments": ["b01", "b02"], "note": "intro - take A was abandoned"},
-    {"segments": ["c07"], "note": "the install walkthrough"},
+    {"segments": ["b01", "b02"], "score": 9, "note": "intro - take A was abandoned"},
+    {"segments": ["c07"], "score": 8, "note": "the install walkthrough"},
     {"segments": ["c12"], "note": "outro", "trim_end": -0.4},
     {"segments": ["d03", "d04"], "drop": [[174.3, 182.4]], "note": "restart removed"}
   ]
@@ -43,10 +43,13 @@ folder, `$PY`/`$T` as defined in `SKILL.md`.
   pause trimming: a beat for an inserted song, a reaction.
 - `max_pause` - this cut's own pause limit, overriding the profile (keep
   the gesture between the words of a spoken list).
-- Top-level `"tight_edges": true` cuts every edge on its first and last
-  word instead of the loose segment boundary - for edits that skip so much
-  that a neighbouring word would leak in at the joins. Use it whenever
-  segments end in a cough, a reach for the camera or chatter.
+- Every edge is cut on its first and last word, not on the loose segment
+  boundary, so the first word of a dropped retake ("...for fun. So - so
+  I've been trying") or the speaker moving about after the last line
+  never leaks in at a join. Top-level `"tight_edges": false` opts out
+  (rarely right).
+- `score` - the beat's 1-10 importance from `build/scores.md`. Only beats
+  scoring 6 or more reach the EDL; the renderer ignores the key.
 - `keep_nonspeech` - `true` keeps this cut's word-less stretches (a laugh
   that is the joke, a demonstrated gesture). By default the renderer
   (`audio.trim_nonspeech` in the profile) treats every stretch longer than

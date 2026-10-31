@@ -59,7 +59,11 @@ def hear(video: Path) -> list[dict]:
     return [w for seg in segments for w in seg["words"]]
 
 
-def compare(shown: list[dict], heard: list[dict]) -> list[str]:
+JOIN_REACH = 0.8         # how close to a join a doubled word counts as a leak
+
+
+def compare(shown: list[dict], heard: list[dict],
+            joins: list[float] = ()) -> list[str]:
     a, b = tokens(shown), tokens(heard)
     ta, tb = [t for t, _ in a], [t for t, _ in b]
     problems = []
@@ -69,12 +73,17 @@ def compare(shown: list[dict], heard: list[dict]) -> list[str]:
             continue
         # one-word substitutions are the recogniser disagreeing with itself,
         # and one word heard twice ("so so") is a drawn-out vowel it split
-        # in two - or a stammer, which stays anyway
+        # in two - or a stammer, which stays anyway. Except at a join: there
+        # it is the first word of the dropped line riding on the kept one's
+        # edge ("...for fun. So - so I've been trying").
         if op == "replace" and len(extra) <= 2 and len(missing) <= 2:
             continue
-        if op == "insert" and len(extra) == 1 and extra[0] in ta[max(0, i1 - 1):i1 + 1]:
-            continue
         at = fmt_ts(b[j1][1] if extra else a[i1][1])[:-3]
+        if op == "insert" and len(extra) == 1 and extra[0] in ta[max(0, i1 - 1):i1 + 1]:
+            if any(abs(b[j1][1] - j) <= JOIN_REACH for j in joins):
+                problems.append(f"{at}  heard twice at a join: '{extra[0]}' "
+                                f"(after '...{' '.join(ta[max(0, i1 - 4):i1])}')")
+            continue
         if extra:
             problems.append(f"{at}  heard but not captioned: '{' '.join(extra)}'"
                             f" (after '...{' '.join(ta[max(0, i1 - 4):i1])}')")
@@ -103,7 +112,11 @@ def listen(root: Path, video: Path) -> list[str]:
     if fixes.exists() and fixes.stat().st_size > 0:
         shown, _ = apply_fixes(shown, load_json(fixes))
     heard = hear(video)
-    return compare(shown, heard), heard_repeats(heard)
+    # where the picture jumps: a new take, or a skip inside one
+    cuts = timeline["cuts"]
+    joins = [c["out_start"] for p, c in zip(cuts, cuts[1:])
+             if c["source"] != p["source"] or abs(c["src_start"] - p["src_end"]) > 0.05]
+    return compare(shown, heard, joins), heard_repeats(heard)
 
 
 def main() -> int:

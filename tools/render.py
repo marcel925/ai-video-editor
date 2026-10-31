@@ -166,7 +166,8 @@ WORD_CAP = 1.0           # longest a single word may take, seconds
 NONSPEECH_MARGIN = 0.1   # word timings drift; stay this far off each word
 
 
-def nonspeech_gaps(words: list[dict], min_gap: float) -> list[tuple[float, float]]:
+def nonspeech_gaps(words: list[dict], min_gap: float,
+                   duration: float | None = None) -> list[tuple[float, float]]:
     """Stretches between words where nobody is speaking, loud or not.
 
     The silence map only knows quiet. A cough, a laugh off-mic, a chair
@@ -177,8 +178,14 @@ def nonspeech_gaps(words: list[dict], min_gap: float) -> list[tuple[float, float
     ("them." running 9s), so each word counts as speech for at most
     WORD_CAP. Holes the recogniser skipped are found and re-transcribed by
     transcribe.py before this runs, and listen.py hears anything that was
-    lost, so a gap here really is a gap."""
+    lost, so a gap here really is a gap.
+
+    The head and tail of the take count too: before the first word and
+    after the last there is only setup, reaching for the camera and walking
+    off, and with no word on the far side they would never be measured."""
     spans = sorted((w["s"], min(w["e"], w["s"] + WORD_CAP)) for w in words)
+    if spans and duration:
+        spans = [(-WORD_CAP, -WORD_CAP)] + spans + [(duration + 2 * NONSPEECH_MARGIN,) * 2]
     gaps = []
     for (_, prev_end), (next_start, _) in zip(spans, spans[1:]):
         a, b = prev_end + NONSPEECH_MARGIN, next_start - NONSPEECH_MARGIN
@@ -256,7 +263,7 @@ def resolve_cuts(edl: dict, segments: list[dict], sources: list[dict],
             words_by_source.setdefault(seg["source"], []).extend(seg.get("words") or [])
         for src in sources:
             gaps = nonspeech_gaps(words_by_source.get(src["name"], []),
-                                  max_pause + min_saving)
+                                  max_pause + min_saving, src.get("duration"))
             quiet[src["name"]] = coalesce(list(src["silences"]) + gaps)
 
     resolved: list[dict] = []
@@ -585,9 +592,11 @@ def main() -> int:
 
     # `start_at` / `end_at` cut on a phrase inside a segment - one word of a
     # list said three times, say - with every time read off the transcript.
-    # `"tight_edges": true` cuts every edge on its first and last word, for
-    # an edit that skips so much that loose segment ends would leak
-    tight = bool(edl.get("tight_edges"))
+    # Every edge is cut on its first and last word: a segment boundary from
+    # the recogniser can carry the first word of the next, dropped line
+    # ("...for fun. So - so I've been trying") or seconds of the speaker
+    # moving about. `"tight_edges": false` opts out.
+    tight = bool(edl.get("tight_edges", True))
     anchored = lambda c: c.get("segments") and (tight or c.get("start_at") or c.get("end_at"))
     if any(anchored(c) for c in edl["cuts"]):
         from shorts import edge_anchors
@@ -672,6 +681,15 @@ def main() -> int:
     # retime.py has moved them.
     tl_path = paths["build"] / "timeline.json"
     prev_path = paths["build"] / "timeline.prev.json"
+    # A kept timeline that retime.py never consumed goes stale the moment
+    # anything is written against a newer cut: retiming from it would move
+    # every layer by the wrong amounts. The current one replaces it then.
+    if prev_path.exists() and tl_path.exists():
+        timed = [paths["build"] / f for f in
+                 ("overlays.json", "overlays_edited.json", "caption_fixes.json")]
+        if any(f.exists() and f.stat().st_mtime > prev_path.stat().st_mtime
+               for f in timed):
+            prev_path.unlink()
     if tl_path.exists() and not prev_path.exists():
         shape = lambda cs: [(c["source"], round(c["src_start"], 2), round(c["src_end"], 2))
                             for c in cs]

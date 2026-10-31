@@ -96,8 +96,9 @@ cut twice. `transcribe.py` re-transcribes every hole it finds, including the
 ones *inside* a segment where a word runs on over unrecognised speech, and
 numbers what it recovers as segments of their own.
 
-Read `$P/build/segments.md` in full and write `$P/build/edl.json` (the
-editorial pass below). Then:
+Read `$P/build/segments.md` in full, score every beat in
+`$P/build/scores.md`, and write `$P/build/edl.json` from the beats that
+survive (the editorial pass below). Then:
 
 ```bash
 $PY $T/render.py   $P --quality preview
@@ -105,8 +106,9 @@ $PY $T/captions.py $P
 ```
 
 Resolve every `check:` line `captions.py` prints, run `words.py $P
---repeats`, and read `$P/build/captions.srt` end to end (see "No double
-takes" and `reference.md`). Then **listen to the cut**:
+--repeats` and `words.py $P --gaps`, and read `$P/build/captions.srt` end
+to end (see "No double takes", "No empty clips" and `reference.md`). Then
+**listen to the cut**:
 
 ```bash
 $PY $T/listen.py   $P                     # re-transcribes cut_preview.mp4
@@ -118,17 +120,20 @@ Every check before it reads the transcript; this one hears the render. Each
 - `heard but not captioned` of a whole phrase: a retake or a stray sentence
   the transcript never had. Run `transcribe.py $P --patch-holes`, `prepare.py`,
   and edit it out (or keep it, if it is good) like any other line.
-- one word heard but not captioned at a join: a syllable of removed material
+- one word heard but not captioned at a join, or `heard twice at a join`
+  ("for fun. So - so I've been trying"): a word of removed material
   survives. Move the `drop` edge or the cut boundary.
 - `captioned but not heard`: the cut clips what the captions promise.
 
 It also lists phrases *heard* twice: compare with `words.py --repeats`; one
 the transcript missed is a hidden retake. The cut is not ready until
 `listen.py` says `heard = captioned` (or every remaining line is shown to be
-recogniser noise, see below). Then **look at the cut**: a strip of frames
-across every stretch where the speaker is not talking (`words.py` gaps over
-~1s) shows a cough, a reach for the camera or someone walking in, which no
-audio check catches. Cut it.
+recogniser noise, see below). Then **look at the cut**: `words.py $P
+--gaps` lists every stretch of a second or more with no words in it. Pull
+a strip of frames across each one: it is usually the speaker moving about,
+a cough, a reach for the camera or someone walking in, which no audio check
+catches. Cut every one that is not a deliberate beat; the cut is not ready
+while one is left unexplained.
 
 Then polish it, in the same run, without stopping to ask:
 
@@ -189,6 +194,37 @@ Read every segment before deciding anything. Work out what the video is
 trying to be, then cut toward it. The folder name is a label, not a brief:
 when it disagrees with the footage, cut the footage and say so.
 
+**Score every beat.** Before writing the EDL, split the recording into
+beats (one idea, story step or claim each; every take of a line is its own
+row) and write `$P/build/scores.md`, one row per beat:
+
+| beat | segments | what it says | score | verdict |
+|------|----------|--------------|-------|---------|
+| 4 | c14 c15 | could AI edit my videos? this video proves it can | 4 | cut: the cold open already said Claude edited it |
+| 5 | c18 | recording on my iPhone, Claude cuts every bad part | 8 | keep |
+
+Score how much the finished video needs it, 1-10:
+
+- **9-10**: the hook, the core claim, a step, number or story the video
+  exists to deliver
+- **7-8**: adds something new that supports it: an example, a reason, a
+  result
+- **6**: worth its seconds, but the first thing to go if the cut runs long
+- **5 or lower: cut.** Setup and meta-talk about the video itself,
+  hedging, asides, a joke that does not land, a restatement, and **any
+  telling of an idea the video makes better somewhere else**, wherever in
+  the recording it sits. Retakes of one line are the obvious case; the
+  same point in different words three sentences or three minutes apart
+  ("this video proves AI can edit my videos" after a cold open that said
+  so; "they have mistakes, multiple takes" and then "one long take with
+  many mistakes") is the one the `~dup` markers miss. Keep the single best
+  telling and score every other one 5 or lower.
+
+Only beats scoring 6 or more reach the EDL, each cut carrying its `score`.
+A beat kept whole can still lose a weak sentence inside it (`drop`). Show
+the table in the report, cuts included, so the user can bring a beat back
+by its number.
+
 **Retakes.** `segments.md` groups near-identical wording under `~dup`
 markers; keep exactly one per group. The later attempt usually wins, but read
 the words after each candidate: a take that ends in "sorry", "let me try that
@@ -200,7 +236,8 @@ payments, use Y") can match without being retakes; keep them all and say so.
 everything between the flub and the restart, setup chatter ("is this
 recording"), and tangents off the topic.
 
-**Cut hard.** Every second has to earn its place; when in doubt, cut.
+**Cut hard.** Every second has to earn its place; when in doubt, cut. A
+viewer forgives a missing sentence and never a slow one.
 
 **No empty clips.** Every stretch of the cut carries clear spoken words that
 belong in the video. Anything else goes, whether or not it is silent:
@@ -217,10 +254,11 @@ belong in the video. Anything else goes, whether or not it is silent:
 
 These hide in two places. Whole segments (`segments.md` shows them: short,
 off-topic, foreign-language, garbled or `~filler`): leave them out of the
-EDL. And inside a kept segment, mostly at its end, where the segment runs
-on past its last word: `"tight_edges": true` and the renderer's
-`trim_nonspeech` take those out, and the frame-strip check after `listen.py`
-confirms it.
+EDL. And at the edges of a kept segment, where it runs on past its last
+word (the end of a take is the worst: the speaker stands up, reaches for
+the phone): the renderer cuts every edge on its first and last word and
+trims word-less stretches (`trim_nonspeech`), and `words.py --gaps` plus
+the frame strip confirm nothing is left.
 
 Beyond those, remove:
 
@@ -237,20 +275,21 @@ Beyond those, remove:
   pause on its own; a non-speech moment the cut needs (a laugh that is the
   joke) gets `"keep_nonspeech": true` on its cut.
 
-Set `"tight_edges": true` at the top of the EDL when the edit skips many
-segments: every cut then starts on its first word and ends on its last, so
-nothing of a skipped neighbour (a cough, the first syllable of a dropped
-line) rides along on a loose segment boundary.
+Every cut starts on its first word and ends on its last (the EDL's
+`tight_edges`, on by default), so nothing of a skipped neighbour (a cough,
+the first word of a dropped line) rides along on a loose segment boundary.
 
-A long-form cut usually keeps 60-75% of the spoken content. Much more
-than that, and the cut is probably too soft; say what you kept that you
-nearly cut.
+**How long.** A talking-head recording is mostly retakes, restarts and
+second tellings: a long-form cut usually runs 35-55% of the raw footage,
+so 20 minutes recorded is 7-10 minutes published. Over 60% the cut is too
+soft: go back to `scores.md` and cut every 6 that repeats a 7. Say in the
+report what you kept that you nearly cut.
 
 **Leave alone.** Do not remove individual "um"s from inside a good sentence;
 each removal is an audible chop. Cut whole segments.
 
 **Pacing.** Long silences inside a cut are trimmed mechanically
-(`audio.max_pause`: 0.55s long, 0.35s short). In long form keep thinking
+(`audio.max_pause`: 0.45s long, 0.35s short). In long form keep thinking
 pauses as beats; in short form cut everything that is not the point.
 
 **No double takes.** The finished cut never contains the same line twice.
@@ -372,7 +411,8 @@ Then tell the user:
   every video handed over: plain, edited, shorts, finals.
 - runtime, and how much raw footage it came from
 - what you kept, in order, by `note`
-- **what you dropped and why**, especially every retake and double-take decision
+- **what you dropped and why**, especially every retake and double-take
+  decision: the `scores.md` table, cut beats included
 - anything you were unsure about, named so they can check it
 - **the overlay additions** (below), as a table, and the edited version's
   report from `edit_video_plus`. A report without them is unfinished.
@@ -434,7 +474,11 @@ Then continue straight into `edit_video_plus`, which reuses these assets.
   `edit_video_plus`, both before the first pause. Never stop between the cut
   and the polish to ask. The edited version never replaces the plain files.
 - Cut hard: asides, restated points, bridges, wrap-up filler and non-speech
-  go unless the video needs them.
+  go unless the video needs them. Every beat is scored in `scores.md`;
+  nothing scoring 5 or lower, and no second telling of an idea, reaches the
+  EDL.
+- No gap of a second or more with no words survives unless it is a beat
+  (`words.py --gaps`).
 - Never reword what the speaker actually said.
 - Every final render ends with `/youtube_metadata`, `/thumbnails` (long
   form) and `/social_posts`, run automatically. A project is not finished

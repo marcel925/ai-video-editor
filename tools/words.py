@@ -4,6 +4,7 @@
   words.py <project>                    sentence per line, with its start time
   words.py <project> --find "no code"   every output time the phrase is spoken
   words.py <project> --repeats          phrases said twice within a few seconds
+  words.py <project> --gaps [SECONDS]   every stretch with no words (default 1.0s)
 
 Writes build/words.json as well. Times come through the same remapping the
 captions use, so a b-roll cut or a sound effect placed at a --find result
@@ -27,6 +28,10 @@ def main() -> int:
     ap.add_argument("--repeats", action="store_true",
                     help="list 4-word phrases repeated within 25s - retakes "
                          "that survived the cut")
+    ap.add_argument("--gaps", nargs="?", type=float, const=1.0, default=None,
+                    help="list every stretch of at least this many seconds "
+                         "with no words in it - dead air, a cough, the "
+                         "speaker moving about")
     args = ap.parse_args()
 
     paths = project_paths(args.project)
@@ -48,6 +53,24 @@ def main() -> int:
                     first, last = words[flat[k][0]], words[flat[k + len(want) - 1][0]]
                     hits.append(f"{first['s']:.2f}-{last['e']:.2f}")
             print(f"{phrase!r}: {', '.join(hits) if hits else 'not found'}")
+        return 0
+
+    if args.gaps is not None:
+        # a word's recognised end runs on to the next onset, so it is
+        # capped: a second is long for any spoken word
+        ends = [min(w["e"], w["s"] + 1.0) for w in words]
+        edges = [(0.0, words[0]["s"], None, words[0])] if words else []
+        edges += [(ends[k], words[k + 1]["s"], words[k], words[k + 1])
+                  for k in range(len(words) - 1)]
+        edges.append((ends[-1], float(timeline["duration"]), words[-1], None))
+        n = 0
+        for a, b, before, after in edges:
+            if b - a >= args.gaps:
+                n += 1
+                print(f"{a:7.2f}  {b - a:4.1f}s  after '{before['w'] if before else '(start)'}'"
+                      f" before '{after['w'] if after else '(end)'}'")
+        print(f"  {n} gap(s) of {args.gaps:g}s or more with no words: look at "
+              f"each one; cut it unless it is a beat the video needs")
         return 0
 
     if args.repeats:
