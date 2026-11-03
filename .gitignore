@@ -45,5 +45,5 @@ motion/node_modules/
 hyperframes/node_modules/
 
 
-# npm installs (tools/setup.sh --motion installs into motion/)
-node_modules/
+# npm installs (a folder, or a symlink to a shared install)
+node_modules
