@@ -44,3 +44,6 @@ videos/*
 motion/node_modules/
 hyperframes/node_modules/
 
+
+# npm installs (tools/setup.sh --motion installs into motion/)
+node_modules/
