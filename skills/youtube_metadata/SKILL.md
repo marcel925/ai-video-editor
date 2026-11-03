@@ -1,6 +1,6 @@
 ---
 name: youtube_metadata
-description: Write YouTube metadata for a finished video - title options, description, chapters, tags, settings, pinned comment and stock credits - into <project>/upload/youtube-metadata.md, beside title-named copies of the finals and captions.srt, so the upload/ folder holds everything needed in YouTube Studio, then hands off to thumbnails (3 A/B-test thumbnails, long form) and social_posts for the other platforms. Runs automatically at the end of every final render from edit_video / edit_video_plus; also use when the user asks for titles, descriptions, chapters, tags, "YouTube metadata" or files to upload. Accepts one project name or "all".
+description: Write YouTube metadata for a finished video - title options, description, chapters, tags, settings, pinned comment and stock credits - into <project>/upload/youtube-metadata.md, beside title-named copies of the finals and captions.srt, so the upload/ folder holds everything needed in YouTube Studio, then hands off to thumbnails (3 A/B-test thumbnails for long form, 3 ranked covers for a Short) and social_posts for the other platforms. Runs automatically at the end of every final render from edit_video / edit_video_plus; also use when the user asks for titles, descriptions, chapters, tags, "YouTube metadata" or files to upload. Accepts one project name or "all".
 ---
 
 # youtube_metadata
@@ -15,7 +15,7 @@ $P/upload/
   <title 1> (edited).mp4         copy of final_edited.mp4
   <title 1> (plain).mp4          copy of final.mp4
   captions.srt                   copy of build/captions.srt
-  thumbnails/ + thumbnails.md    3 A/B-test thumbnails (Step 4, the thumbnails skill)
+  thumbnails/ + thumbnails.md    3 A/B-test thumbnails, or 3 ranked Shorts covers (Step 4)
   social-posts.md                posts for the other platforms (Step 5, social_posts)
 ```
 
@@ -152,12 +152,12 @@ cp "$P/build/captions.srt" "$P/upload/captions.srt"
 
 ## Step 4 - thumbnails
 
-For a long-form project, run `/thumbnails <project_name>` straight away,
-without asking. It writes three A/B-test thumbnails to
-`$P/upload/thumbnails/` and the ideas behind them to
-`$P/upload/thumbnails.md`, designed against title 1 from this file. Skip
-`_short` projects: Shorts can't run Test & Compare. For `all`, run
-`/thumbnails all`. If thumbnails already exist and the edit only changed
+Run `/thumbnails <project_name>` straight away, without asking. It writes
+three thumbnails to `$P/upload/thumbnails/` and the ideas behind them to
+`$P/upload/thumbnails.md`, designed against title 1 from this file. Long
+form gets three A/B-test thumbnails for Test & Compare; a `_short` gets
+three ranked 9:16 covers (Shorts can't run the test), A being the one to
+use. For `all`, run `/thumbnails all`. If thumbnails already exist and the edit only changed
 slightly, keep them; they come from the raw footage, not the render.
 
 ## Step 5 - social posts

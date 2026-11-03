@@ -1,17 +1,18 @@
 ---
 name: thumbnails
-description: Make 3 YouTube thumbnails for a long-form video, ready for YouTube's Test & Compare A/B test - list 10 hook ideas drawn from the video (big number, before/after, screenshot proof, tool logo, mistake stamp...), score each 1-10, pick the 3 best with variety, and render them at 3840x2160 from the video's own frames (the speaker cut out with Apple Vision), checked at phone-feed and sidebar size. Runs from youtube_metadata after every final render; use directly when the user asks for thumbnails, a thumbnail A/B test or "thumbnail ideas". Accepts one project name or "all".
+description: Make 3 YouTube thumbnails for a long-form video, ready for YouTube's Test & Compare A/B test, or 3 ranked 1080x1920 covers for a Short (YouTube Shorts, Instagram Reels, TikTok) - list 10 hook ideas drawn from the video (big number, before/after, screenshot proof, tool logo, mistake stamp...), score each 1-10, pick the 3 best with variety, and render them at 3840x2160 (2160x3840 for a Short) from the video's own frames (the speaker cut out with Apple Vision), checked at the sizes viewers see them. Runs from youtube_metadata after every final render; use directly when the user asks for thumbnails, a thumbnail A/B test or "thumbnail ideas". Accepts one project name or "all".
 ---
 
 # thumbnails
 
-Three thumbnails per long-form video, each a different idea, for YouTube
-Studio's **Test & Compare**. YouTube shows each to a share of viewers and
-picks the one that earns the most watch time.
+Three thumbnails per video, each a different idea. For long form they go
+into YouTube Studio's **Test & Compare**, which shows each to a share of
+viewers and picks the one that earns the most watch time. For a Short they
+are three ranked covers, and the user picks one (see Shorts below).
 
 ```
 /thumbnails <project_name>      # one video
-/thumbnails all                 # every long-form project with a timeline
+/thumbnails all                 # every project with a final (long and short)
 ```
 
 `$PY`, `$T` and `$P` are as in the `edit_video` skill (`PY=.venv/bin/python;
@@ -21,17 +22,41 @@ HyperFrames is installed, run `tools/setup.sh --motion remotion` once.
 **Output**
 
 ```
-$P/upload/thumbnails/A.jpg B.jpg C.jpg   3840x2160, under 2 MB where possible
-$P/upload/thumbnails.md                  the 10 ideas, scores, picks, how to run the test
+$P/upload/thumbnails/A.jpg B.jpg C.jpg   3840x2160 (a Short: 2160x3840), under 2 MB where possible
+$P/upload/thumbnails.md                  the 10 ideas, scores, picks, how to run the test / use the cover
 $P/build/thumbnails.json                 the layer spec (re-render after tweaks)
 $P/build/thumbs/                         candidate frames, cut-outs, check.jpg
 ```
 
-**Long form only.** Test & Compare doesn't run on Shorts. Custom Shorts
-thumbnails (1080x1920) exist since July 2026, but only for Partner Program
-channels, only from desktop Studio, and with no A/B test. Skip `_short`
-projects unless the user asks for a Shorts cover. If they do, make one
-1080x1920 variant: the renderer picks the size from the project's timeline.
+### Shorts
+
+A `_short` project (anything with a 9:16 timeline) gets three covers too,
+made the same way: 10 ideas, scored, three picks of different archetypes.
+The renderer picks 9:16 from the project's timeline. What changes:
+
+- **No A/B test.** Test & Compare doesn't run on Shorts, so the order is a
+  ranking: A is the cover to use, B and C are the runners-up. Custom Shorts
+  thumbnails can be uploaded since July 2026, but only by Partner Program
+  channels and only from desktop Studio. Otherwise the cover goes where a
+  custom image is allowed: the Instagram Reels cover and the TikTok cover.
+  The phone apps also let any channel pick a frame from the video.
+- **Where it's seen.** Nobody sees a cover in the swipe feed, where the
+  video just plays. Covers show on the Shorts shelf and channel tab
+  (YouTube draws the title over the bottom of the tile), in search, and on
+  the Instagram and TikTok profile grids, which crop the cover to the centre
+  3:4. So the face and every word sit inside the centre band, `y` 0.13 to
+  0.87, and no text goes below `y` 0.72, where the shelf title sits.
+- **The hook is the cover's own words.** A Short's title is often cut or
+  hidden, so the cover may carry the claim on its own; it still mustn't
+  repeat title 1 word for word.
+- **Taller layout.** Stack the elements: words in the top third, the face
+  in the middle, one proof object or badge between them. Text sizes are
+  pixels at a 1080 short edge, so the same `size` reads larger in a 9:16
+  frame than in a 16:9 one; keep lines to 2-3 words to fit the width.
+- **Frames.** A `_short` with a polished version often has screenshots and
+  graphics on screen: `grab --from edited` takes them. A Short cut from a
+  long video (`$P/shorts/<slug>`) borrows the long project's frames and
+  assets; its covers go in `$P/shorts/<slug>/upload/thumbnails/`.
 
 When `youtube_metadata` calls this, go straight through without asking.
 
@@ -170,14 +195,19 @@ on a 1920x1080 layout; the render is at 2x. The full prop list is in
 $PY $T/thumbnail.py render $P     # -> upload/thumbnails/*.jpg + build/thumbs/check.jpg
 ```
 
-Then **look at every full-size thumbnail and at `check.jpg`**. The check
-sheet shows each variant in the phone feed (dark and light theme, with the
-duration badge YouTube draws) and at sidebar size. Fix and re-render until
+Then **look at every full-size thumbnail and at `check.jpg`**. For long
+form the check sheet shows each variant in the phone feed (dark and light
+theme, with the duration badge YouTube draws) and at sidebar size. For a
+Short it shows the Shorts shelf tile with the title drawn over its bottom,
+the 3:4 profile-grid crop and the small search size. Fix and re-render until
 every variant passes:
 
-- [ ] At sidebar size you can still say what it is and read the main words.
+- [ ] At sidebar (Short: search) size you can still say what it is and read
+      the main words.
 - [ ] Nothing important in the bottom-right corner (the duration badge,
-      progress bar and hover icons sit there) or the outer 5%.
+      progress bar and hover icons sit there) or the outer 5%. A Short:
+      nothing cut off in the 3:4 grid crop, and no words under the shelf
+      title.
 - [ ] At most 3 elements and 5 words. The text doesn't repeat the title.
 - [ ] Text is 4.5:1 contrast or better against what's behind it (outline,
       shadow or a block behind it). Accent yellow is the house colour; green
@@ -252,7 +282,7 @@ Title 1: <title> · files in `upload/thumbnails/`
 - **B.jpg** = idea N: ...
 - **C.jpg** = idea N: ... (passed over idea M (score 8) for variety: same archetype as A)
 
-## Running the test
+## Running the test            (long form; a Short gets "Using the cover" below)
 
 1. YouTube Studio on **desktop** → the video → Thumbnail → **Test & Compare**
    → upload A, B, C in that order (an inconclusive test keeps A).
@@ -263,13 +293,24 @@ Title 1: <title> · files in `upload/thumbnails/`
    the result is usually "Inconclusive". Then keep A, or swap in the next
    idea from the list for the next test.
 
+## Using the cover               (a Short, instead of "Running the test")
+
+A is the pick; B and C are the runners-up, in order.
+
+- **YouTube:** Partner Program channels upload A in desktop Studio → the
+  Short → Thumbnail. Otherwise pick the frame at <m:ss> in the app (the
+  frame closest to A).
+- **Instagram Reels:** Edit cover → Add from camera roll → A. Check the 3:4
+  grid preview.
+- **TikTok:** Select cover → upload A (or pick the same frame).
+
 Assets: <logo sources and licences, if any>
 ````
 
 ## Report
 
-Per video: the three picks with their scores and archetypes, and the path to
-`check.jpg`. Show the user the thumbnails if the session can display images.
+Per video: the three picks with their scores and archetypes (for a Short,
+which one to use and where), and the path to `check.jpg`. Show the user the thumbnails if the session can display images.
 Mention anything you couldn't make: an idea that needed a screenshot the
 project doesn't have is worth naming, so they can drop one in `assets/` and
 re-run.

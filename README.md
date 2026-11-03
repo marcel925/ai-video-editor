@@ -151,7 +151,10 @@ in `upload/thumbnails.md` and renders the best three, each a different kind
 of idea, to `upload/thumbnails/A.jpg`, `B.jpg` and `C.jpg` at 3840x2160.
 `thumbnail.py` finds the best face frames (Apple Vision on macOS), takes
 full-resolution stills from the camera files, cuts the speaker out and
-checks each thumbnail at phone-feed and sidebar size. The rules, archetypes
+checks each thumbnail at phone-feed and sidebar size. A Short gets three
+ranked 9:16 covers the same way (Shorts can't run the test): A is the one to
+use on YouTube, Instagram Reels and TikTok, checked on the Shorts shelf and
+in the 3:4 profile-grid crop. The rules, archetypes
 and the channels they come from are in `skills/thumbnails/SKILL.md`. It needs
 the Remotion engine (`tools/setup.sh --motion remotion`).
 

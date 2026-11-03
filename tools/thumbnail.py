@@ -14,8 +14,9 @@ cut the speaker out, render the variants and check them at feed size.
   thumbnail.py cutout <project> <image>
         the speaker on a transparent background -> <image>_cut.png (macOS)
   thumbnail.py render <project>
-        build/thumbnails.json -> upload/thumbnails/<id>.jpg, then
-        build/thumbs/check.jpg: every variant at the sizes viewers see it
+        build/thumbnails.json -> upload/thumbnails/<id>.jpg (9:16 for a
+        vertical timeline: a Shorts cover), then build/thumbs/check.jpg:
+        every variant at the sizes viewers see it
 
 Spec ($P/build/thumbnails.json), layers drawn bottom first - the layer types
 are documented in motion/thumb/Thumbnail.tsx and the thumbnails skill:
@@ -366,9 +367,11 @@ def cmd_render(paths: dict) -> None:
 
 
 def check_sheet(paths: dict, variants: list[dict], vertical: bool, duration: float) -> None:
-    """Each variant as a viewer meets it: the phone home feed (dark and light
-    theme, with the duration badge YouTube draws bottom-right) and the small
-    suggested-video size beside a title."""
+    """Each variant as a viewer meets it. Long form: the phone home feed (dark
+    and light theme, with the duration badge YouTube draws bottom-right) and
+    the small suggested-video size beside a title. A Short: the Shorts shelf
+    tile with the title over its bottom, the 3:4 crop Instagram and TikTok
+    profile grids show, and the small search size."""
     from PIL import Image, ImageDraw, ImageFont
     from common import find_font
 
@@ -382,25 +385,70 @@ def check_sheet(paths: dict, variants: list[dict], vertical: bool, duration: flo
     rowh = big[1] + 90
     sheet = Image.new("RGB", (len(variants) * (big[0] + 40) + 40, 2 * rowh + 60 + small[1] + 40), "#808080")
     d = ImageDraw.Draw(sheet)
+
+    def rounded(im: Image.Image, at: tuple[int, int]) -> None:
+        mask = Image.new("L", im.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, im.width - 1, im.height - 1], 12, fill=255)
+        sheet.paste(im, at, mask)
+
+    def shelf_tile(im: Image.Image) -> Image.Image:
+        # the title (2 lines) and view count drawn over a dark fade at the bottom
+        t = im.resize(big, Image.LANCZOS).convert("RGBA")
+        fade = Image.new("RGBA", big, (0, 0, 0, 0))
+        fd = ImageDraw.Draw(fade)
+        top = int(big[1] * 0.68)
+        for y in range(top, big[1]):
+            fd.line([(0, y), (big[0], y)], fill=(0, 0, 0, int(200 * (y - top) / (big[1] - top))))
+        t = Image.alpha_composite(t, fade)
+        td = ImageDraw.Draw(t)
+        f = F(fb, 15)
+        words, lines = title.split(), [""]
+        for w in words:
+            if td.textlength((lines[-1] + " " + w).strip(), font=f) > big[0] - 20 and lines[-1]:
+                if len(lines) == 2:
+                    lines[-1] += "…"
+                    break
+                lines.append("")
+            lines[-1] = (lines[-1] + " " + w).strip()
+        y = big[1] - 22 - 19 * len(lines)
+        for line in lines:
+            td.text((10, y), line, fill="white", font=f)
+            y += 19
+        td.text((10, y + 2), "12K views", fill="#DDDDDD", font=F(fr, 12))
+        return t.convert("RGB")
+
     for i, v in enumerate(variants):
         im = Image.open(paths["root"] / "upload" / "thumbnails" / f"{v['id']}.jpg")
         x = 40 + i * (big[0] + 40)
-        for row, (bg, fg) in enumerate((("#0F0F0F", "#F1F1F1"), ("#FFFFFF", "#0F0F0F"))):
-            y = 20 + row * rowh
-            d.rectangle([x - 20, y - 10, x + big[0] + 20, y + rowh - 20], fill=bg)
-            t = im.resize(big, Image.LANCZOS)
-            mask = Image.new("L", big, 0)
-            ImageDraw.Draw(mask).rounded_rectangle([0, 0, big[0] - 1, big[1] - 1], 12, fill=255)
-            sheet.paste(t, (x, y), mask)
-            f = F(fb, 15)
-            bw = d.textlength(badge, font=f) + 10
-            d.rounded_rectangle([x + big[0] - bw - 6, y + big[1] - 26, x + big[0] - 6, y + big[1] - 6], 4, fill="#000000CC")
-            d.text((x + big[0] - bw - 1, y + big[1] - 25), badge, fill="white", font=f)
-            d.text((x, y + big[1] + 10), (title[:48] + "…") if len(title) > 49 else title, fill=fg, font=F(fb, 17))
-            d.text((x, y + big[1] + 36), f"{v['id']}: {v.get('idea', '')}"[:60], fill="#888", font=F(fr, 14))
+        if vertical:
+            for row in range(2):
+                y = 20 + row * rowh
+                d.rectangle([x - 20, y - 10, x + big[0] + 20, y + rowh - 20], fill="#0F0F0F")
+                if row == 0:
+                    rounded(shelf_tile(im), (x, y))
+                    label = "Shorts shelf"
+                else:
+                    gh = round(big[0] * 4 / 3)          # the 3:4 grid crop
+                    crop = im.crop((0, round((im.height - im.width * 4 / 3) / 2), im.width,
+                                    round((im.height + im.width * 4 / 3) / 2)))
+                    rounded(crop.resize((big[0], gh), Image.LANCZOS), (x, y + (big[1] - gh) // 2))
+                    label = "Instagram / TikTok grid (3:4)"
+                d.text((x, y + big[1] + 10), f"{v['id']}: {v.get('idea', '')}"[:30], fill="#F1F1F1", font=F(fb, 17))
+                d.text((x, y + big[1] + 36), label, fill="#888", font=F(fr, 14))
+        else:
+            for row, (bg, fg) in enumerate((("#0F0F0F", "#F1F1F1"), ("#FFFFFF", "#0F0F0F"))):
+                y = 20 + row * rowh
+                d.rectangle([x - 20, y - 10, x + big[0] + 20, y + rowh - 20], fill=bg)
+                rounded(im.resize(big, Image.LANCZOS), (x, y))
+                f = F(fb, 15)
+                bw = d.textlength(badge, font=f) + 10
+                d.rounded_rectangle([x + big[0] - bw - 6, y + big[1] - 26, x + big[0] - 6, y + big[1] - 6], 4, fill="#000000CC")
+                d.text((x + big[0] - bw - 1, y + big[1] - 25), badge, fill="white", font=f)
+                d.text((x, y + big[1] + 10), (title[:48] + "…") if len(title) > 49 else title, fill=fg, font=F(fb, 17))
+                d.text((x, y + big[1] + 36), f"{v['id']}: {v.get('idea', '')}"[:60], fill="#888", font=F(fr, 14))
         y = 2 * rowh + 40
         sheet.paste(im.resize(small, Image.LANCZOS), (x, y))
-        d.text((x + small[0] + 10, y), f"{v['id']} at\nsuggested\nsize", fill="black", font=F(fr, 14))
+        d.text((x + small[0] + 10, y), f"{v['id']} at\n{'search' if vertical else 'suggested'}\nsize", fill="black", font=F(fr, 14))
     out = paths["build"] / "thumbs" / "check.jpg"
     sheet.save(out, quality=90)
     print(f"  {out.relative_to(paths['root'])}  - look at it: is the text readable and the face clear at this size?")

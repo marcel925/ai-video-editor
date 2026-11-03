@@ -74,7 +74,7 @@ videos/<project>/
   preview.mp4  final.mp4                the plain version
   preview_edited.mp4  final_edited.mp4  the edited version (edit_video_plus)
   upload/                               metadata + title-named copies to upload (youtube_metadata)
-                                        thumbnails/ for a Test & Compare A/B test (thumbnails)
+                                        thumbnails/: 3 for an A/B test, or 3 ranked Shorts covers (thumbnails)
                                         social-posts.md for X, LinkedIn, Threads, ... (social_posts)
 ```
 
@@ -168,8 +168,8 @@ $PY $T/shorts.py   render $P --quality final      # only if shorts.json exists
 asking, when this is the project's last final: the user asked for plain
 only, or `final_edited.mp4` already exists. Otherwise the edited version
 comes next and `edit_video_plus` runs it after its own final, so both
-copies land in `upload/`. `youtube_metadata` then runs `/thumbnails` (long
-form: three A/B-test thumbnails in `upload/thumbnails/`) and `/social_posts`,
+copies land in `upload/`. `youtube_metadata` then runs `/thumbnails` (three
+A/B-test thumbnails, or for a Short three ranked covers, in `upload/thumbnails/`) and `/social_posts`,
 so the copy-paste posts for every other platform land in
 `upload/social-posts.md` too. Tell the user once it is done.
 
@@ -481,7 +481,7 @@ Then continue straight into `edit_video_plus`, which reuses these assets.
   (`words.py --gaps`).
 - Never reword what the speaker actually said.
 - Every final render ends with `/youtube_metadata`, `/thumbnails` (long
-  form) and `/social_posts`, run automatically. A project is not finished
+  form and Shorts) and `/social_posts`, run automatically. A project is not finished
   until its `upload/` folder, thumbnails and posts included, is current.
 - Shorts only when asked for, picked from the long cut's kept lines, and
   never reported until their listen check is clean.
