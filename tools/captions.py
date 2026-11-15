@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -45,6 +46,16 @@ STYLES = {
 GROUP_GAP = 0.7          # a pause this long starts a new caption
 HEAD_TOL = 0.25          # how early a cut's first word may be labelled
 SENTENCE_END = (".", "?", "!", "…")
+# A caption never ends in a full stop: on screen it looks strange. Groups still
+# break at sentences (above); only the shown text loses the dot. ? and ! stay.
+FULL_STOP = re.compile(r"\.+(?=[\"'”’»)]*$)")
+
+
+def shown(group: list[dict]) -> list[str]:
+    """The words of a caption as displayed: the trailing full stop dropped."""
+    words = [w["w"] for w in group]
+    words[-1] = FULL_STOP.sub("", words[-1])
+    return words
 
 # Emoji are punctuation, not decoration: one per caption at most, and never
 # twice in quick succession, or the eye starts reading the badges instead of
@@ -283,11 +294,12 @@ def events(groups: list[list[dict]], style: dict) -> list[str]:
         if end <= start:
             continue
         if not style["karaoke"]:
-            text = escape(" ".join(w["w"] for w in group))
+            text = escape(" ".join(shown(group)))
             lines.append(f"Dialogue: 0,{ass_ts(start)},{ass_ts(end)},Cap,,0,0,0,,{text}")
             continue
         # One event per word so the active word can be tinted without
         # relying on karaoke timing support in the renderer.
+        display = shown(group)
         for i, word in enumerate(group):
             wstart = word["s"]
             wend = group[i + 1]["s"] if i + 1 < len(group) else end
@@ -295,7 +307,7 @@ def events(groups: list[list[dict]], style: dict) -> list[str]:
                 continue
             parts = []
             for j, other in enumerate(group):
-                token = escape(other["w"])
+                token = escape(display[j])
                 if j == i:
                     parts.append(f"{{\\c{style['highlight']}}}{token}"
                                  f"{{\\c{style['primary']}}}")
@@ -413,7 +425,7 @@ def write_srt(path: Path, groups: list[list[dict]], badges: dict) -> None:
             end = min(end, groups[i][0]["s"] - 0.02)
         if end <= start:
             continue
-        text = " ".join(w["w"] + badges.get(id(w), "") for w in group)
+        text = " ".join(t + badges.get(id(w), "") for t, w in zip(shown(group), group))
         blocks.append(f"{i}\n{srt_ts(start)} --> {srt_ts(end)}\n{text}\n")
     path.write_text("\n".join(blocks))
 
