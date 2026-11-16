@@ -3,9 +3,10 @@ name: unslop
 description: >
     Strip AI tells out of writing and put a voice back - puffery, "not just X but Y", chatbot filler,
     metaphor jargon, feeling-words over mechanisms. Full rules for USER-FACING copy (social posts, YouTube
-    descriptions, titles), a reduced set for internal docs. Every post from social_posts goes through it.
-    Use when: "unslop this", "this reads like AI", "make this sound human", "de-slop the copy", or before
-    publishing any text.
+    titles and descriptions, captions, UI and website text, and the report an agent writes at the end of a
+    task), a reduced set for internal docs. Every post from social_posts goes through it.
+    Use when: "unslop this", "this reads like AI", "make this sound human", "de-slop the copy", before
+    publishing any text, or before sending a final report to a person.
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep
 ---
 
@@ -18,7 +19,7 @@ Edit text to remove AI patterns and add human voice. The full pattern list is in
 
 | Scope | Rule set | Why |
 |---|---|---|
-| **User-facing copy**: social posts, YouTube titles, descriptions, pinned comments, captions | **All 31 rules.** | This is where an AI tell costs reach. Readers on every platform now scroll past text that smells generated, and Reddit and Bluesky call it out in the comments. |
+| **User-facing copy**: any text a person reads. Social posts, YouTube titles, descriptions, pinned comments, captions, UI text, website and landing-page copy, store listings, and the report or final reply an agent writes for a person at the end of a task | **All 31 rules.** | This is where an AI tell costs reach. Readers on every platform now scroll past text that smells generated, and Reddit and Bluesky call it out in the comments. A report full of tells gets skimmed the same way. |
 | **Internal docs and code comments**: `SKILL.md` files, READMEs, `reference.md`, comments | **All rules EXCEPT 13 and 26.** | This repo's skill files use em dashes and words like "surface" freely. Changing that is a style migration, not a de-slopping pass. |
 
 Everything else applies to both. Rules 27-31 (say what it does not how it feels, split dense sentences,
