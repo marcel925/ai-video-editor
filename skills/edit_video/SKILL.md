@@ -417,8 +417,8 @@ Then tell the user:
 - **the overlay additions** (below), as a table, and the edited version's
   report from `edit_video_plus`. A report without them is unfinished.
 
-The previews are a proposal, not finished videos. End by offering to change,
-move or remove any addition, or the cut itself.
+The previews are a proposal, not finished videos. Offer to change, move or
+remove any addition, or the cut itself.
 
 ## Overlay additions
 
