@@ -180,3 +180,13 @@ $PY $T/export.py $P
 Writes `$P/build/edit.otio` (DaVinci Resolve: File -> Import -> Timeline) and
 `$P/build/edit.fcpxml` (Final Cut, Premiere), referencing the original
 footage, so every decision carries over.
+
+## iPhone-trimmed `.MOV` sources
+
+A clip trimmed on the iPhone (`IMG_1234_part2.MOV`) carries an audio edit list, so `render.py`'s fast
+`-ss` seek lands the audio at a different point from the decoded wav: words go missing at cuts and
+`listen.py` reports many mismatches. The picture is fine. Detect it with
+`ffmpeg -v trace -i FILE 2>&1 | grep "edit list"` (audio media time well above 0). Work around it by
+building `build/<stem>.norm.mov` from the original video stream plus the `raw_audios/` wav
+(`-map 0:v:0 -map 1:a:0 -c:v copy -c:a pcm_s16le`) and pointing `video` in `build/sources.json` at it;
+a stream-copy remux alone does not fix it, and re-running `ingest.py` undoes the workaround.
