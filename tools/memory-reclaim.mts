@@ -49,7 +49,7 @@ export type Snapshot = {
   liveWorktreeSlugs: Set<string> | null;
   isPathGone: (path: string) => boolean;
   selfPids: Set<number>;
-  cpuPct?: Map<number, number> | undefined;
+  cpuPct?: Map<number, number> | null | undefined;
   /** When the checkout holding this path last changed its index or HEAD log (ms); undefined outside any checkout, null when unreadable. */
   checkoutTouchedAt?: ((path: string) => number | null | undefined) | undefined;
   /** Each live worktree's slug and path; for a control-app simulator's checkout. */
@@ -476,6 +476,8 @@ function scoreItem(
       : worktreeSlugOf(item.cwd);
   if (slug !== undefined && sessionWorktrees.has(slug))
     return { score: 8, scoreWhy: `an agent session is open in worktree ${slug}` };
+  if (snap.cpuPct === null)
+    return { score: 6, scoreWhy: 'CPU use unreadable, so it may be busy' };
   const cpu = item.pids.reduce((sum, pid) => sum + (snap.cpuPct?.get(pid) ?? 0), 0);
   if (cpu >= (BUSY_CPU_PCT[item.category] ?? 5))
     return { score: 7, scoreWhy: `busy: ${Math.round(cpu)}% CPU` };
@@ -693,7 +695,7 @@ export async function collectSnapshot(): Promise<Snapshot> {
       listenRes.code === 0 || listenRes.stdout !== '' ? parseListeningPids(listenRes.stdout) : null,
     isPathGone,
     selfPids: ancestorsOf(process.pid, procs),
-    cpuPct: parseCpu(cpuRes.stdout),
+    cpuPct: cpuRes.code === 0 ? parseCpu(cpuRes.stdout) : null,
     checkoutTouchedAt,
   };
 }

@@ -499,6 +499,8 @@ test('an unknown fails closed: nothing scores 5 or below without the evidence', 
   const cwds = new Map(procs.map((p) => [p.pid, `/repo/.claude/worktrees/feat/w${p.pid}`]));
   const noLsof = classify(snapshot(procs, { cwds, listeningPids: null }), NOW);
   assert.ok(noLsof.filter((i) => i.category === 'orphans').every((i) => (i.score ?? 0) >= 6));
+  const noCpu = classify(snapshot(procs, { cwds, listeningPids: new Set(), cpuPct: null }), NOW);
+  assert.ok(noCpu.filter((i) => i.category === 'orphans').every((i) => (i.score ?? 0) >= 6));
 
   const scored = classify(
     snapshot(procs, {
