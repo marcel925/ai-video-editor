@@ -1,0 +1,28 @@
+# Agent rules
+
+## This repo is public
+
+Everything pushed here is public. Show the owner each change and push only when they say so. Some editing
+styles are closed source and live in the owner's private fork; never add them here. After a push, the fork
+merges this repo in by the steps in its own `CLAUDE.md`.
+
+Commit as `Marcel Moraru <31319366+marcel925@users.noreply.github.com>` on the owner's machine;
+collaborators use their own GitHub identity. Never put a personal email in a commit.
+
+## Every memory lives in this repo
+
+A correction, preference or lesson goes into this file or the skill or tool that owns it, in the same
+change, so every developer's agents share it. Never into an assistant's local memory: auto memory is off
+in `.claude/settings.json`.
+
+## Fix the pipeline, not only the video
+
+When a rendered video shows a defect (a hidden retake, a stutter at a join, a leaked word), fix the video
+and change the tools so every future edit catches or prevents that defect class, then make the check a
+required step in the skill. Don't silently change a video the owner already approved: report the finding
+and ask.
+
+## Where videos live
+
+The owner's own YouTube videos and shorts are edited here, in `videos/<project>/` (gitignored, so
+footage is never pushed). Look for a personal project here first and create new ones here.
