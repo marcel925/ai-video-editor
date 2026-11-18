@@ -22,6 +22,15 @@ and change the tools so every future edit catches or prevents that defect class,
 required step in the skill. Don't silently change a video the owner already approved: report the finding
 and ask.
 
+## Room on the machine
+
+On a Mac, before launching a sub-agent, a render, a transcription or a simulator, read
+`sysctl -n kern.memorystatus_vm_pressure_level hw.ncpu vm.loadavg`. Launch while memory pressure is
+normal (`1`) and the 1-minute load is under 6x the core count. Otherwise run
+`node tools/memory-reclaim.mts --stale` first: it stops leftovers that are unlikely to still be needed,
+never a session, an app or Docker ([`machine-memory-reclaim`](skills/machine-memory-reclaim/SKILL.md)
+has the scale). Then re-check, and hold only if there is still no room.
+
 ## Where videos live
 
 The owner's own YouTube videos and shorts are edited here, in `videos/<project>/` (gitignored, so

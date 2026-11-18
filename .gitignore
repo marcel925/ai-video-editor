@@ -25,6 +25,7 @@ resume-session.sh
 *.webm
 *.MOV
 *.MP4
+!tools/*.mts
 
 # Extracted and intermediate audio
 *.wav
