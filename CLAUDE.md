@@ -31,6 +31,12 @@ normal (`1`) and the 1-minute load is under 6x the core count. Otherwise run
 never a session, an app or Docker ([`machine-memory-reclaim`](skills/machine-memory-reclaim/SKILL.md)
 has the scale). Then re-check, and hold only if there is still no room.
 
+**Decide at task start whether it can run unattended in the cloud** (an `Agent` with
+`isolation: "remote"`). Only a change to code or docs qualifies, and only when proving it needs no video
+file, render, transcription, simulator or other tool on this Mac: its own tests or a dry run must be
+enough. Most work here edits local footage and stays on the Mac. Give it a self-contained brief with a
+stop condition, and let the session that sent it end.
+
 ## Where videos live
 
 The owner's own YouTube videos and shorts are edited here, in `videos/<project>/` (gitignored, so
