@@ -25,8 +25,11 @@ and ask.
 ## Room on the machine
 
 On a Mac, before launching a sub-agent, a render, a transcription or a simulator, read
-`sysctl -n kern.memorystatus_vm_pressure_level hw.ncpu vm.loadavg`. Launch while memory pressure is
-normal (`1`) and the 1-minute load is under 6x the core count. Otherwise run
+`sysctl -n kern.memorystatus_vm_pressure_level kern.memorystatus_level hw.ncpu vm.loadavg`. Launch while
+memory has room and the 1-minute load is under 6x the core count. **Room** = pressure level `1` (normal), or
+`2` (warn) with `kern.memorystatus_level` (system-wide free-memory %, the number `memory_pressure` prints)
+≥ 20. **No room** at `4` (critical), at any level with free < 20%, or at `2` with the free % unreadable.
+After a no-room reading, launch again only once room has held for a sustained minute. Otherwise run
 `node tools/memory-reclaim.mts --stale` first: it stops leftovers that are unlikely to still be needed,
 never a session, an app or Docker ([`machine-memory-reclaim`](skills/machine-memory-reclaim/SKILL.md)
 has the scale). Then re-check, and hold only if there is still no room.
