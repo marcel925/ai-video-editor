@@ -14,15 +14,15 @@ Never `kill` or `pkill` by hand beside it: a `pkill -f` pattern hits every sessi
 
 ## When
 
-Before holding any launch (a sub-agent, a render, a transcription, a simulator or emulator) because memory
-pressure is at warn (`2`) or critical (`4`), or the 1-minute load is over 6x the core count:
+Before holding any launch (a sub-agent, a render, a transcription, a simulator or emulator) because
+memory has no room (see `CLAUDE.md`: critical `4`, or under 20% free), or the 1-minute load is over 6x the core count:
 
 ```bash
 node tools/memory-reclaim.mts --stale
 ```
 
 It reports, then stops everything scored 5 or lower without asking (owner, 2026-11-18). Re-read
-`sysctl -n kern.memorystatus_vm_pressure_level vm.loadavg` and hold only if there is still no room.
+`sysctl -n kern.memorystatus_vm_pressure_level kern.memorystatus_level vm.loadavg` and hold only if there is still no room.
 
 ## How likely it is still needed
 
