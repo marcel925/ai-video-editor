@@ -26,6 +26,7 @@ resume-session.sh
 *.MOV
 *.MP4
 !tools/*.mts
+!.claude/hooks/*.mts
 
 # Extracted and intermediate audio
 *.wav
