@@ -174,3 +174,7 @@ test('parses lsof cwds and booted simulators, tolerating bad JSON', () => {
   assert.deepEqual(parseBootedSimulators(json), [{ udid: 'ABC', name: 'control-app-x' }]);
   assert.deepEqual(parseBootedSimulators('not json'), []);
 });
+
+test('an lsof pid line must be p and digits only', () => {
+  assert.deepEqual([...parseCwds('pNaN\nn/x\np12\nn/y\n')], [[12, '/y']]);
+});

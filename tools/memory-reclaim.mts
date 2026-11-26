@@ -79,8 +79,10 @@ export type Snapshot = {
   worktreePaths?: Map<string, string> | undefined;
   /** Pids holding a listening TCP socket; null when lsof could not be read. */
   listeningPids?: Set<number> | null | undefined;
-  /** Ports each pid listens on. */
-  listenPorts?: Map<number, Set<number>> | undefined;
+  /** Ports each pid listens on; null when lsof could not be read. */
+  listenPorts?: Map<number, Set<number>> | null | undefined;
+  /** Host ports each emulator's `adb reverse` maps, keyed by its console port; null for one that could not be read. */
+  adbReversePorts?: Map<number, Set<number> | null> | undefined;
   /** Remote ports each pid holds an established TCP connection to; null when lsof could not be read. */
   connectedPorts?: Map<number, Set<number>> | null | undefined;
   /** CPU seconds used so far, keyed `pid@started`; null when ps could not be read. */
@@ -155,6 +157,7 @@ export const CPU_SAMPLE_SPACING_MS = 2 * 60_000;
 export const CPU_LEDGER_KEEP_MS = 90 * 60_000;
 // The Stop hook's own limit is 15 s; a ps that slow under load gives up and records nothing.
 const HOOK_PS_TIMEOUT_MS = 8000;
+const ADB_TIMEOUT_MS = 10_000;
 export const STOP_LOG_PATH = join(homedir(), 'Library/Logs/memory-reclaim.log');
 const STOP_LOG_MAX_LINES = 2000;
 // A dev server or device a session runs as its own child; only --aggressive splits these out of the session.
@@ -545,7 +548,7 @@ export function classify(snap: Snapshot, now: number, opts: ClassifyOptions = {}
     }
     if (category === 'emulators') {
       const avd = root.args.match(/-avd\s+(\S+)/)?.[1] ?? 'unknown AVD';
-      const port = root.args.match(/-port\s+(\d+)/)?.[1];
+      const port = emulatorConsolePort(root.args, snap.listenPorts?.get(pid));
       items.push({
         ...base,
         kind: 'needsApproval',
@@ -675,6 +678,15 @@ export function classify(snap: Snapshot, now: number, opts: ClassifyOptions = {}
  * the app it serves is being driven.
  */
 export function deviceServedBy(server: Item, items: Item[], snap: Snapshot): string | undefined {
+  const inUse = items.find(
+    (d) => (d.category === 'simulators' || d.category === 'emulators') && (d.score ?? 10) >= 6,
+  );
+  if (inUse === undefined) return undefined;
+  if (snap.listenPorts === null || snap.listeningPids === null)
+    return `listening sockets unreadable, and ${inUse.label} is in use`;
+  // Without its folder or the worktree list, the same-worktree link below cannot be ruled out.
+  if (server.cwd === undefined || snap.liveWorktreeSlugs === null)
+    return `its owner is unresolvable (working directory or worktree list unreadable), and ${inUse.label} is in use`;
   const ports = new Set<number>();
   for (const pid of server.pids) for (const port of snap.listenPorts?.get(pid) ?? []) ports.add(port);
   if (ports.size === 0 && !server.pids.some((pid) => snap.listeningPids?.has(pid))) return undefined;
@@ -692,6 +704,15 @@ export function deviceServedBy(server: Item, items: Item[], snap: Snapshot): str
     const isConnected = viaPids.some((pid) =>
       [...(snap.connectedPorts?.get(pid) ?? [])].some((port) => ports.has(port)),
     );
+    // A mapping outlives the connection: an app being reinstalled or relaunched reconnects to it.
+    if (device.category === 'emulators') {
+      const consolePort = Number(device.label.match(/ port (\d+)$/)?.[1]);
+      const reverse = snap.adbReversePorts?.get(consolePort);
+      if (!Number.isInteger(consolePort) || reverse === null)
+        return `adb reverse unreadable for ${device.label}, which is in use`;
+      if ([...(reverse ?? [])].some((port) => ports.has(port)))
+        return `serves ${device.label}, which is in use (adb reverse maps its port)`;
+    }
     const slug = device.label.match(CONTROL_APP_DEVICE)?.[1];
     const checkout = slug === undefined ? undefined : snap.worktreePaths?.get(slug);
     const isSameWorktree =
@@ -702,6 +723,49 @@ export function deviceServedBy(server: Item, items: Item[], snap: Snapshot): str
       return `serves ${device.label}, which is in use (${isConnected ? 'connected to its port' : 'same worktree'})`;
   }
   return undefined;
+}
+
+const EMULATOR_CONSOLE_PORTS = { first: 5554, last: 5682 };
+
+/** An emulator's console port (its serial is `emulator-<port>`): `-port N`, else the lowest even console-range port it listens on. */
+export function emulatorConsolePort(
+  args: string,
+  listening: Set<number> | undefined,
+): number | undefined {
+  const flag = Number(args.match(/-port\s+(\d+)/)?.[1]);
+  if (Number.isInteger(flag) && flag > 0) return flag;
+  const candidates = [...(listening ?? [])].filter(
+    (port) =>
+      port % 2 === 0 &&
+      port >= EMULATOR_CONSOLE_PORTS.first &&
+      port <= EMULATOR_CONSOLE_PORTS.last,
+  );
+  return candidates.length > 0 ? Math.min(...candidates) : undefined;
+}
+
+/** `adb reverse --list` lines (`host-11 tcp:8101 tcp:8101`) → the host ports mapped. */
+export function parseAdbReverse(text: string): Set<number> {
+  const ports = new Set<number>();
+  for (const line of text.split(/\r?\n/)) {
+    const port = Number(line.trim().split(/\s+/).at(-1)?.match(/^tcp:(\d+)$/)?.[1]);
+    if (Number.isInteger(port) && port > 0) ports.add(port);
+  }
+  return ports;
+}
+
+async function readAdbReversePorts(
+  procs: Proc[],
+  listenPorts: Map<number, Set<number>> | null,
+): Promise<Map<number, Set<number> | null>> {
+  const out = new Map<number, Set<number> | null>();
+  for (const p of procs) {
+    if (!commName(p).startsWith('qemu-system')) continue;
+    const port = emulatorConsolePort(p.args, listenPorts?.get(p.pid));
+    if (port === undefined || out.has(port)) continue;
+    const res = await run('adb', ['-s', `emulator-${port}`, 'reverse', '--list'], ADB_TIMEOUT_MS);
+    out.set(port, res.code === 0 ? parseAdbReverse(res.stdout) : null);
+  }
+  return out;
 }
 
 /** `lsof -nP -iTCP -Fpn`: each pid's local ports (listen) and the remote ports it is connected to. */
@@ -778,10 +842,9 @@ type Scored = { score: number; scoreWhy: string; hold: Hold };
 function scoreByOwnership(
   item: Item,
   snap: Snapshot,
-  sessionWorktrees: Set<string>,
-  byPid: Map<number, Proc>,
-  now: number,
+  context: { sessionWorktrees: Set<string>; byPid: Map<number, Proc>; now: number },
 ): Scored {
+  const { sessionWorktrees, byPid, now } = context;
   if (item.ownerSessionPid !== undefined) {
     if (snap.cpuPct === null)
       return { score: 6, scoreWhy: 'CPU use unreadable, so it may be busy', hold: 'firm' };
@@ -899,7 +962,7 @@ function scoreItem(
       score: 7,
       scoreWhy: `driven right now by pid ${client.pid}: ${client.args.slice(0, 60)}`,
     };
-  const held = scoreByOwnership(item, snap, context.sessionWorktrees, byPid, now);
+  const held = scoreByOwnership(item, snap, context);
   if (held.hold === 'firm' || held.score <= 2 || (held.hold === 'claim' && !context.aggressive))
     return held;
   // A claim returns before scoreByOwnership's own CPU checks, so an old idle average never outvotes busy-now.
@@ -1067,7 +1130,9 @@ function readCpuLedger(): CpuSample[] {
     return Array.isArray(parsed)
       ? parsed.filter(
           (s): s is CpuSample =>
-            typeof s === 'object' && s !== null && typeof s.at === 'number' && typeof s.cpu === 'object',
+            typeof s === 'object' && s !== null && typeof s.at === 'number' &&
+            typeof s.cpu === 'object' &&
+            s.cpu !== null,
         )
       : [];
   } catch {
@@ -1146,8 +1211,9 @@ export async function collectSnapshot(): Promise<Snapshot> {
         p.ppid === 1 || AGENT_COMMANDS.has(commName(p)) || isDevServer(p) || isEmulatorProcess(p),
     )
     .map((p) => p.pid);
-  const listeningPids =
-    listenRes.code === 0 || listenRes.stdout !== '' ? parseListeningPids(listenRes.stdout) : null;
+  // A failed or timed-out lsof lists only some sockets, which would read as "not serving".
+  const listeningPids = listenRes.code === 0 ? parseListeningPids(listenRes.stdout) : null;
+  const listenPorts = listenRes.code === 0 ? parseTcpPorts(listenRes.stdout).local : null;
   const cwds = await readCwds([...new Set([...rootish, ...(listeningPids ?? [])])]);
   const sessionDirs = procs
     .filter((p) => AGENT_COMMANDS.has(commName(p)))
@@ -1168,7 +1234,8 @@ export async function collectSnapshot(): Promise<Snapshot> {
     checkoutTouchedAt,
     cpuSeconds,
     cpuHistory,
-    listenPorts: parseTcpPorts(listenRes.stdout).local,
+    listenPorts,
+    adbReversePorts: await readAdbReversePorts(procs, listenPorts),
     // A timed-out or failed lsof leaves a partial list that would read as "nothing connected".
     connectedPorts: connectedRes.code === 0 ? parseTcpPorts(connectedRes.stdout).remote : null,
   };
@@ -1415,8 +1482,11 @@ export function appendStopLog(lines: string[]): void {
     mkdirSync(dirname(STOP_LOG_PATH), { recursive: true });
     appendFileSync(STOP_LOG_PATH, `${lines.join('\n')}\n`);
     const all = readFileSync(STOP_LOG_PATH, 'utf8').split(/\r?\n/).filter(Boolean);
-    if (all.length > STOP_LOG_MAX_LINES)
-      writeFileSync(STOP_LOG_PATH, `${all.slice(-STOP_LOG_MAX_LINES).join('\n')}\n`);
+    if (all.length > STOP_LOG_MAX_LINES) {
+      const partial = `${STOP_LOG_PATH}.${process.pid}.tmp`;
+      writeFileSync(partial, `${all.slice(-STOP_LOG_MAX_LINES).join('\n')}\n`);
+      renameSync(partial, STOP_LOG_PATH);
+    }
   } catch (error) {
     console.error(`could not write the stop log ${STOP_LOG_PATH}: ${String(error)}`);
   }

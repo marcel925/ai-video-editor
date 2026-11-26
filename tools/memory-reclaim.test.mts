@@ -14,6 +14,8 @@ import {
   idleEvidence,
   isDevServer,
   isPathGone,
+  emulatorConsolePort,
+  parseAdbReverse,
   parseCpuSeconds,
   parseTcpPorts,
   selectStale,
@@ -952,18 +954,43 @@ test('an idle Metro stays while an in-use emulator reaches it through adb revers
     old(proc(30, 1, 'npm exec expo start --port 8100', 'npm exec expo start --port 8100')),
     old(proc(31, 30, 'node', 'node expo start --port 8100')),
   ];
-  const metro = (connected: Map<number, Set<number>>) =>
+  const metro = (over: Partial<Snapshot>) =>
     classify(
       snapshot(procs, {
         cwds: new Map([[30, '/repo/.claude/worktrees/feat/x/apps/mobile']]),
         listeningPids: new Set([31, 80]),
         listenPorts: new Map([[31, new Set([8100])]]),
-        connectedPorts: connected,
+        connectedPorts: new Map(),
+        adbReversePorts: new Map([[5654, new Set()]]),
         checkoutTouchedAt: () => NOW - 5 * 3_600_000,
         ...cpuOver(procs, { 31: 1, 90: 600 }, { cpuPct: new Map([[90, 80]]) }),
+        ...over,
       }),
       NOW,
     ).find((i) => i.rootPid === 30);
-  assert.equal(metro(new Map([[80, new Set([8100])]]))?.score, 6);
-  assert.equal(metro(new Map())?.score, 2);
+  assert.equal(metro({ connectedPorts: new Map([[80, new Set([8100])]]) })?.score, 6);
+  assert.match(
+    metro({ adbReversePorts: new Map([[5654, new Set([8100])]]) })?.scoreWhy ?? '',
+    /adb reverse maps its port/,
+  );
+  assert.equal(metro({ adbReversePorts: new Map([[5654, null]]) })?.score, 6);
+  assert.equal(metro({})?.score, 2);
+  assert.equal(metro({ listenPorts: null })?.score, 6);
+  assert.equal(metro({ listeningPids: null })?.score, 6);
+  assert.match(metro({ liveWorktreeSlugs: null })?.scoreWhy ?? '', /owner is unresolvable/);
+  assert.equal(metro({ cwds: new Map() })?.score, 6);
+});
+
+test('parseAdbReverse reads the host port of each mapping', () => {
+  assert.deepEqual(
+    [...parseAdbReverse('host-11 tcp:8101 tcp:8101\nUsbFfs tcp:8081 tcp:8082\n\n')],
+    [8101, 8082],
+  );
+});
+
+test('emulatorConsolePort reads -port, else the lowest even console port the emulator listens on', () => {
+  assert.equal(emulatorConsolePort('qemu -avd a -port 5654', new Set([5554])), 5654);
+  assert.equal(emulatorConsolePort('qemu -avd a', new Set([5555, 5554, 8554, 55836])), 5554);
+  assert.equal(emulatorConsolePort('qemu -avd a', new Set([8554])), undefined);
+  assert.equal(emulatorConsolePort('qemu -avd a', undefined), undefined);
 });
