@@ -33,7 +33,7 @@ from its activity, not its kind, and the first matching row wins:
 | Score | When | Stopped by `--stale` |
 |---|---|---|
 | 10 | an agent session (`claude`, `codex`) and its children, a desktop app, Docker, this tool's own session | never |
-| 8 | an agent session is open in the item's worktree | no |
+| 8 | an agent session is open in the item's worktree; a simulator whose worktree still serves it: a process started there (Metro, a dev server) holds a listening TCP port, since a person testing by hand leaves the device idle and the checkout untouched | no |
 | 7 | busy: over 5% CPU for a process, 25% for a simulator, 30% for an emulator | no |
 | 6 | started under 30 minutes ago; its checkout's git index or HEAD log changed in the last hour; a device in the same named group as a device in use (`qa-a-…`, `qa_a_…`); an orphan holding a listening TCP port; or anything whose working directory, checkout or sockets could not be read, since an unknown fails closed | no |
 | 5 | an idle simulator or emulator no session claims | yes |

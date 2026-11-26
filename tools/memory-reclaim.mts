@@ -476,6 +476,16 @@ function scoreItem(
       : worktreeSlugOf(item.cwd);
   if (slug !== undefined && sessionWorktrees.has(slug))
     return { score: 8, scoreWhy: `an agent session is open in worktree ${slug}` };
+  const simCheckout =
+    item.category === 'simulators' && slug !== undefined
+      ? snap.worktreePaths?.get(slug)
+      : undefined;
+  const server = simCheckout === undefined ? undefined : listenerIn(simCheckout, snap);
+  if (server !== undefined)
+    return {
+      score: 8,
+      scoreWhy: `its worktree still serves it: pid ${server} listens from ${slug}`,
+    };
   if (snap.cpuPct === null)
     return { score: 6, scoreWhy: 'CPU use unreadable, so it may be busy' };
   const cpu = item.pids.reduce((sum, pid) => sum + (snap.cpuPct?.get(pid) ?? 0), 0);
@@ -483,6 +493,11 @@ function scoreItem(
     return { score: 7, scoreWhy: `busy: ${Math.round(cpu)}% CPU` };
   const ageMs = now - Date.parse(item.startedAt ?? '');
   if (!(ageMs >= YOUNG_MS)) return { score: 6, scoreWhy: 'started under 30 minutes ago' };
+  if (simCheckout !== undefined && snap.listeningPids === null)
+    return {
+      score: 6,
+      scoreWhy: 'listening sockets unreadable, so its worktree may still serve it',
+    };
   if (item.category === 'orphans') {
     if (item.cwd === undefined)
       return { score: 6, scoreWhy: 'working directory unreadable, so its owner is unknown' };
@@ -516,6 +531,15 @@ function scoreItem(
   return item.category === 'orphans'
     ? { score: 4, scoreWhy: 'idle orphan outside any worktree; restarts on demand' }
     : { score: 5, scoreWhy: 'idle for 30+ minutes and no session claims it' };
+}
+
+// Idle CPU and an untouched checkout are not unused: hand testing leaves both quiet while Metro runs.
+function listenerIn(checkout: string, snap: Snapshot): number | undefined {
+  for (const pid of snap.listeningPids ?? []) {
+    const cwd = snap.cwds.get(pid);
+    if (cwd === checkout || cwd?.startsWith(`${checkout}/`)) return pid;
+  }
+  return undefined;
 }
 
 export function isPathGone(path: string): boolean {
@@ -678,7 +702,9 @@ export async function collectSnapshot(): Promise<Snapshot> {
   const rootish = procs
     .filter((p) => p.ppid === 1 || AGENT_COMMANDS.has(commName(p)))
     .map((p) => p.pid);
-  const cwds = await readCwds(rootish);
+  const listeningPids =
+    listenRes.code === 0 || listenRes.stdout !== '' ? parseListeningPids(listenRes.stdout) : null;
+  const cwds = await readCwds([...new Set([...rootish, ...(listeningPids ?? [])])]);
   const sessionDirs = procs
     .filter((p) => AGENT_COMMANDS.has(commName(p)))
     .map((p) => cwds.get(p.pid))
@@ -691,8 +717,7 @@ export async function collectSnapshot(): Promise<Snapshot> {
     launchdJobPids,
     liveWorktreeSlugs: slugs === null ? null : new Set(slugs.keys()),
     worktreePaths: slugs ?? undefined,
-    listeningPids:
-      listenRes.code === 0 || listenRes.stdout !== '' ? parseListeningPids(listenRes.stdout) : null,
+    listeningPids,
     isPathGone,
     selfPids: ancestorsOf(process.pid, procs),
     cpuPct: cpuRes.code === 0 ? parseCpu(cpuRes.stdout) : null,
