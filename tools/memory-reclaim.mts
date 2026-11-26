@@ -1,14 +1,23 @@
 #!/usr/bin/env node
 // Self-contained on purpose: Node 24 runs this file as is, with no dependency and no other file.
 // The scale and procedure: skills/machine-memory-reclaim/SKILL.md in this repo.
-import { execFile } from 'node:child_process';
-import { readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { execFile, execFileSync } from 'node:child_process';
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export type Category =
   | 'orphans'
+  | 'dev-servers'
   | 'idb-companion'
   | 'simulators'
   | 'emulators'
@@ -40,6 +49,20 @@ export type Item = {
   /** 1-10, how likely the item is still needed; 10 is never stopped. */
   score?: number | undefined;
   scoreWhy?: string | undefined;
+  /** The live agent session whose process tree holds the item (aggressive mode splits these out). */
+  ownerSessionPid?: number | undefined;
+  ownerSessionCwd?: string | undefined;
+};
+/** CPU seconds each process had used, keyed `pid@started`. */
+export type CpuSample = { at: number; cpu: Record<string, number> };
+/** A CPU-heavy job (a render, a transcription, a native build): work, reported and never stopped. */
+export type WorkItem = {
+  pid: number;
+  label: string;
+  cpuPct: number;
+  rssBytes: number;
+  ownerSessionPid?: number | undefined;
+  ownerSessionCwd?: string | undefined;
 };
 export type Snapshot = {
   procs: Proc[];
@@ -56,6 +79,16 @@ export type Snapshot = {
   worktreePaths?: Map<string, string> | undefined;
   /** Pids holding a listening TCP socket; null when lsof could not be read. */
   listeningPids?: Set<number> | null | undefined;
+  /** Ports each pid listens on; null when lsof could not be read. */
+  listenPorts?: Map<number, Set<number>> | null | undefined;
+  /** Host ports each emulator's `adb reverse` maps, keyed by its console port; null for one that could not be read. */
+  adbReversePorts?: Map<number, Set<number> | null> | undefined;
+  /** Remote ports each pid holds an established TCP connection to; null when lsof could not be read. */
+  connectedPorts?: Map<number, Set<number>> | null | undefined;
+  /** CPU seconds used so far, keyed `pid@started`; null when ps could not be read. */
+  cpuSeconds?: Map<string, number> | null | undefined;
+  /** Earlier CPU samples from the machine-wide ledger, oldest first. */
+  cpuHistory?: CpuSample[] | undefined;
 };
 export type MemoryState = {
   pressureLevel: number | null;
@@ -67,13 +100,18 @@ export type MemoryState = {
 export type Report = {
   mode: 'report';
   generatedAt: string;
+  /** Scored with session-owned devices and dev servers split out of their session (`--aggressive`). */
+  aggressive?: boolean | undefined;
   memory: MemoryState;
   items: Item[];
+  work?: WorkItem[] | undefined;
   notes: string[];
 };
+export type ClassifyOptions = { aggressive?: boolean | undefined };
 
 export const APPLY_CATEGORIES: readonly Category[] = [
   'orphans',
+  'dev-servers',
   'idb-companion',
   'simulators',
   'emulators',
@@ -103,8 +141,204 @@ const TERM_GRACE_MS = 5000;
 const KB = 1024;
 const PRETTY_LINES_PER_CATEGORY = 15;
 
+// The idle signal (owner, 2026-11-26): a device or dev server is unused once its tree has averaged at most
+// IDLE_CPU_PCT over the window, read from the CPU ledger every run and every session's Stop hook feeds.
+export const IDLE_WINDOW_MS = 20 * 60_000;
+export const ORPHAN_IDLE_WINDOW_MS = 10 * 60_000;
+export const IDLE_CPU_PCT: Partial<Record<Category, number>> = {
+  orphans: 2,
+  'dev-servers': 2,
+  simulators: 12,
+  emulators: 12,
+};
+// Machine-wide, so every account, session and repo copy of this tool reads and feeds the same history.
+export const CPU_LEDGER_PATH = join(homedir(), 'Library/Caches/memory-reclaim/cpu-samples.json');
+export const CPU_SAMPLE_SPACING_MS = 2 * 60_000;
+export const CPU_LEDGER_KEEP_MS = 90 * 60_000;
+// The Stop hook's own limit is 15 s; a ps that slow under load gives up and records nothing.
+const HOOK_PS_TIMEOUT_MS = 8000;
+const ADB_TIMEOUT_MS = 10_000;
+export const STOP_LOG_PATH = join(homedir(), 'Library/Logs/memory-reclaim.log');
+const STOP_LOG_MAX_LINES = 2000;
+// A dev server or device a session runs as its own child; only --aggressive splits these out of the session.
+export const DEV_SERVER_ARGS =
+  /(?:\bexpo(?:\/bin\/cli)?\s+start\b|\breact-native\s+start\b|\bmetro\s+serve\b|\bnext\s+dev\b|\bvite\b|\bwebpack\s+serve\b|\btsx\s+watch\b|\bnodemon\b|\bGradleDaemon\b|\bremotion\s+studio\b)/;
+const EMULATOR_COMMAND = /^(?:qemu-system|emulator$)/;
+// Work, not idleness: never stopped, always reported. Remotion Studio is a dev server, not a render. This
+// repo's pipeline (tools/*.py, tools/build.sh, motion|hyperframes render.mjs) transcribes and renders in
+// process, so its entry points name the work where "whisper" or "ffmpeg" may not appear.
+export const HEAVY_JOB_ARGS =
+  /(?:\bffmpeg\b|whisper|parakeet|\bremotion\b(?!\s+studio\b)|\bxcodebuild\b|GradleWorkerMain|\bgradlew\b|\bpod\s+install\b|\beas\s+build\b|\brender\.mjs\b|\btools\/(?:build\.sh|\w+\.py)\b)/;
+
 function commName(proc: Proc): string {
   return basename(proc.comm);
+}
+
+/** The executable name, also when npm or a runner set a process title such as `npm exec expo start`. */
+function commandName(proc: Proc): string {
+  return commName(proc).split(' ')[0] ?? '';
+}
+
+const SHELLS = new Set(['zsh', 'bash', 'sh', 'fish', 'dash']);
+
+/** A shell's command line names whatever it runs, so a shell is never the server, the job or (once old) the client. */
+function isShell(proc: Proc): boolean {
+  return SHELLS.has(commandName(proc).replace(/^-/, ''));
+}
+
+export function isDevServer(proc: Proc): boolean {
+  return (
+    !isShell(proc) &&
+    !AGENT_COMMANDS.has(commName(proc)) &&
+    DEV_SERVER_ARGS.test(proc.args) &&
+    !HEAVY_JOB_ARGS.test(proc.args)
+  );
+}
+
+function isHeavyJob(proc: Proc): boolean {
+  return !isShell(proc) && HEAVY_JOB_ARGS.test(proc.args);
+}
+
+/** The nearest ancestor that is not a shell: a server or job counts once, at the top of its own chain. */
+function parentSkippingShells(proc: Proc, byPid: Map<number, Proc>): Proc | undefined {
+  const seen = new Set<number>();
+  let cur = byPid.get(proc.ppid);
+  while (cur && isShell(cur) && !seen.has(cur.pid)) {
+    seen.add(cur.pid);
+    cur = byPid.get(cur.ppid);
+  }
+  return cur;
+}
+
+export function isEmulatorProcess(proc: Proc): boolean {
+  return EMULATOR_COMMAND.test(commName(proc));
+}
+
+/** `ps -axo pid=,lstart=,time=` → CPU seconds keyed `pid@started` (the same key an item id uses). */
+export function parseCpuSeconds(text: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const line of text.split(/\r?\n/)) {
+    const [, pid, started, time] =
+      line.match(/^\s*(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+([\d:.]+)\s*$/) ?? [];
+    if (pid === undefined || started === undefined || time === undefined) continue;
+    const seconds = time.split(':').reduce((sum, part) => sum * 60 + Number(part), 0);
+    if (Number.isFinite(seconds)) out.set(`${pid}@${started.replace(/\s+/g, ' ')}`, seconds);
+  }
+  return out;
+}
+
+/** Appends `sample` unless the newest is under CPU_SAMPLE_SPACING_MS old, and drops samples past CPU_LEDGER_KEEP_MS. */
+export function addCpuSample(ledger: CpuSample[], sample: CpuSample): CpuSample[] {
+  const kept = ledger.filter((s) => sample.at - s.at <= CPU_LEDGER_KEEP_MS && s.at <= sample.at);
+  const newest = kept.at(-1);
+  if (newest !== undefined && sample.at - newest.at < CPU_SAMPLE_SPACING_MS) return kept;
+  return [...kept, sample];
+}
+
+export type IdleEvidence =
+  | { state: 'idle'; windowMs: number; avgPct: number }
+  | { state: 'active'; windowMs: number; avgPct: number }
+  | { state: 'unknown'; why: string };
+
+/**
+ * How much CPU the item's tree used since the newest ledger sample at least `windowMs` old. A process
+ * missing from that sample started since, so its whole CPU time counts as activity in the window.
+ */
+export function idleEvidence(
+  item: Pick<Item, 'pids' | 'rootPid' | 'rootStarted' | 'category'>,
+  procs: Map<number, Proc>,
+  snap: Pick<Snapshot, 'cpuSeconds' | 'cpuHistory'>,
+  opts: { now: number; windowMs: number },
+): IdleEvidence {
+  if (!snap.cpuSeconds) return { state: 'unknown', why: 'CPU time unreadable' };
+  const base = [...(snap.cpuHistory ?? [])].reverse().find((s) => opts.now - s.at >= opts.windowMs);
+  if (base === undefined)
+    return {
+      state: 'unknown',
+      why: `no CPU sample ${Math.round(opts.windowMs / 60_000)}+ minutes old yet`,
+    };
+  const rootKey = `${item.rootPid}@${item.rootStarted}`;
+  if (base.cpu[rootKey] === undefined)
+    return { state: 'unknown', why: 'not running at the oldest usable CPU sample' };
+  let used = 0;
+  for (const pid of item.pids) {
+    const proc = procs.get(pid);
+    if (!proc) continue;
+    const key = `${pid}@${proc.started}`;
+    const nowSeconds = snap.cpuSeconds.get(key);
+    if (nowSeconds === undefined) continue;
+    used += nowSeconds - (base.cpu[key] ?? 0);
+  }
+  const elapsedMs = opts.now - base.at;
+  const avgPct = (used * 1000 * 100) / elapsedMs;
+  const limit = IDLE_CPU_PCT[item.category] ?? 1;
+  return { state: avgPct <= limit ? 'idle' : 'active', windowMs: elapsedMs, avgPct };
+}
+
+function idleText(evidence: { windowMs: number; avgPct: number }): string {
+  return `idle ${Math.round(evidence.windowMs / 60_000)}m at ${evidence.avgPct.toFixed(1)}% average CPU`;
+}
+
+/**
+ * A process outside the device's own tree that names it right now: a capture, an install, a test drive. A
+ * shell counts only while young, since a background shell that once launched the device lives on idle.
+ */
+export function deviceClientOf(item: Item, procs: Proc[], now: number): Proc | undefined {
+  const own = new Set(item.pids);
+  const isClient = (p: Proc) =>
+    !own.has(p.pid) &&
+    !isDevServer(p) &&
+    (!isShell(p) || now - Date.parse(p.started) < IDLE_WINDOW_MS);
+  if (item.category === 'simulators' && item.udid) {
+    const udid = item.udid.toUpperCase();
+    return procs.find(
+      (p) => isClient(p) && commName(p) !== 'idb_companion' && p.args.toUpperCase().includes(udid),
+    );
+  }
+  if (item.category === 'emulators') {
+    const port = item.label.match(/ port (\d+)/)?.[1];
+    return procs.find(
+      (p) =>
+        isClient(p) &&
+        commandName(p) === 'adb' &&
+        !p.args.includes('fork-server') &&
+        (port === undefined || !/\s-s\s/.test(p.args) || p.args.includes(`emulator-${port}`)),
+    );
+  }
+  return undefined;
+}
+
+const SIM_APP_PATH = /\/data\/Containers\/Bundle\/Application\//;
+
+/**
+ * A simulator app (re)launched inside the idle window means a session is working with the device now, however
+ * quiet its CPU: a capture run relaunches the app and then waits on screenshots and a bundle.
+ */
+export function recentlyLaunchedApp(
+  item: Pick<Item, 'category' | 'pids'>,
+  byPid: Map<number, Proc>,
+  now: number,
+): Proc | undefined {
+  if (item.category !== 'simulators') return undefined;
+  return item.pids
+    .map((pid) => byPid.get(pid))
+    .find(
+      (p): p is Proc =>
+        p !== undefined && SIM_APP_PATH.test(p.args) && now - Date.parse(p.started) < IDLE_WINDOW_MS,
+    );
+}
+
+/** One line of the machine-wide stop log, so the session that owned an item can see who stopped it and why. */
+export function formatStopLogLine(
+  item: Item,
+  opts: { at: string; outcome: string; actor: string },
+): string {
+  const id = item.udid && item.category === 'simulators' ? item.udid : `pid ${item.rootPid}`;
+  const owner =
+    item.ownerSessionPid === undefined
+      ? 'no live owner session'
+      : `owner session pid ${item.ownerSessionPid}${item.ownerSessionCwd ? ` in ${item.ownerSessionCwd}` : ''}`;
+  return `${opts.at}\t${opts.outcome}\t[${item.category}] ${item.label} (${id})\tscore ${item.score ?? '?'}/10: ${item.scoreWhy ?? item.reason}\t${owner}\tby ${opts.actor}`;
 }
 
 export function parsePs(pidLines: string, commLines: string): Proc[] {
@@ -155,14 +389,36 @@ export function memoryUsedBytes(vm: { pageSize: number; pages: Record<string, nu
   );
 }
 
-function rootKindOf(proc: Proc, snap: Snapshot, simRoots: Map<number, string>): Category | null {
+/** The nearest agent session above `proc`, if it runs inside one. */
+function ownerSessionOf(proc: Proc, byPid: Map<number, Proc>): Proc | undefined {
+  const seen = new Set<number>();
+  for (let cur = byPid.get(proc.ppid); cur && !seen.has(cur.pid); cur = byPid.get(cur.ppid)) {
+    seen.add(cur.pid);
+    if (AGENT_COMMANDS.has(commName(cur))) return cur;
+  }
+  return undefined;
+}
+
+function rootKindOf(
+  proc: Proc,
+  snap: Snapshot,
+  context: { simRoots: Map<number, string>; byPid: Map<number, Proc>; aggressive: boolean },
+): Category | null {
   const name = commName(proc);
   if (AGENT_COMMANDS.has(name)) return 'agent-sessions';
-  if (simRoots.has(proc.pid)) return 'simulators';
-  if (proc.ppid !== 1) return null;
+  if (context.simRoots.has(proc.pid)) return 'simulators';
+  if (proc.ppid !== 1) {
+    // --aggressive: a live session's own device or dev server is scored on its own, by the idle signal.
+    if (!context.aggressive || snap.selfPids.has(proc.pid)) return null;
+    if (ownerSessionOf(proc, context.byPid) === undefined) return null;
+    const parent = parentSkippingShells(proc, context.byPid);
+    if (isEmulatorProcess(proc) && !(parent && isEmulatorProcess(parent))) return 'emulators';
+    if (isDevServer(proc) && !(parent && isDevServer(parent))) return 'dev-servers';
+    return null;
+  }
   if (name.startsWith('qemu-system')) return 'emulators';
   if (name === 'idb_companion') return 'idb-companion';
-  if (DEV_COMMANDS.has(name) && !snap.launchdJobPids.has(proc.pid)) return 'orphans';
+  if (DEV_COMMANDS.has(commandName(proc)) && !snap.launchdJobPids.has(proc.pid)) return 'orphans';
   if (APP_BUNDLE.test(proc.comm)) return 'apps';
   return null;
 }
@@ -200,7 +456,8 @@ function worktreeOf(cwd: string | undefined): string | undefined {
   return cwd?.match(/\.claude\/worktrees\/(.+?)(?:\/apps\/|\/packages\/|\/scripts\/|$)/)?.[1];
 }
 
-export function classify(snap: Snapshot, now: number): Item[] {
+export function classify(snap: Snapshot, now: number, opts: ClassifyOptions = {}): Item[] {
+  const aggressive = opts.aggressive === true;
   const byPid = new Map(snap.procs.map((p) => [p.pid, p]));
   const booted = new Map((snap.bootedSims ?? []).map((s) => [s.udid.toUpperCase(), s.name]));
   const simRoots = new Map<number, string>();
@@ -212,7 +469,7 @@ export function classify(snap: Snapshot, now: number): Item[] {
 
   const roots = new Map<number, Category>();
   for (const p of snap.procs) {
-    const kind = rootKindOf(p, snap, simRoots);
+    const kind = rootKindOf(p, snap, { simRoots, byPid, aggressive });
     if (kind) roots.set(p.pid, kind);
   }
   const members = new Map<number, number[]>();
@@ -252,6 +509,8 @@ export function classify(snap: Snapshot, now: number): Item[] {
     if (!root) continue;
     const pids = members.get(pid) ?? [pid];
     const rssBytes = pids.reduce((sum, id) => sum + (byPid.get(id)?.rssKb ?? 0) * KB, 0);
+    const ownerSession =
+      category === 'agent-sessions' || category === 'apps' ? undefined : ownerSessionOf(root, byPid);
     const base = {
       id: `${pid}@${root.started}`,
       category,
@@ -260,10 +519,13 @@ export function classify(snap: Snapshot, now: number): Item[] {
       rootPid: pid,
       rootStarted: root.started,
       startedAt: root.started,
+      ownerSessionPid: ownerSession?.pid,
+      ownerSessionCwd: ownerSession ? snap.cwds.get(ownerSession.pid) : undefined,
     };
     const age = ageText(root.started, now);
     const cwd = snap.cwds.get(pid);
     const isSelf = pids.some((id) => snap.selfPids.has(id));
+    const ownedBy = ownerSession ? `run by live session pid ${ownerSession.pid}` : '';
 
     if (category === 'apps') {
       const app = appNameOf(root);
@@ -306,11 +568,22 @@ export function classify(snap: Snapshot, now: number): Item[] {
     }
     if (category === 'emulators') {
       const avd = root.args.match(/-avd\s+(\S+)/)?.[1] ?? 'unknown AVD';
+      const port = emulatorConsolePort(root.args, snap.listenPorts?.get(pid));
       items.push({
         ...base,
         kind: 'needsApproval',
-        label: `Android emulator ${avd}`,
-        reason: `${age}; the shared AVD other sessions boot — stop only by approved pid when no session is on it`,
+        label: `Android emulator ${avd}${port ? ` port ${port}` : ''}`,
+        reason: `${age}; ${ownedBy || 'the shared AVD other sessions boot'} — stop only by approved pid when no session is on it`,
+      });
+      continue;
+    }
+    if (category === 'dev-servers') {
+      items.push({
+        ...base,
+        kind: 'needsApproval',
+        label: `${commName(root)} pid ${pid}: ${root.args.slice(0, 90)}`,
+        cwd,
+        reason: `dev server ${ownedBy}, ${age}${cwd ? `, in ${cwd}` : ''} — stopped only when idle by the idle signal (--aggressive)`,
       });
       continue;
     }
@@ -400,7 +673,7 @@ export function classify(snap: Snapshot, now: number): Item[] {
       .filter((slug): slug is string => slug !== undefined),
   );
   for (const item of items)
-    Object.assign(item, scoreItem(item, snap, sessionWorktrees, byPid, now));
+    Object.assign(item, scoreItem(item, snap, { sessionWorktrees, byPid, now, aggressive }));
   for (const item of items) {
     const family = deviceFamily(item);
     if (family === undefined || (item.score ?? 10) > 5) continue;
@@ -410,7 +683,131 @@ export function classify(snap: Snapshot, now: number): Item[] {
     if (busy)
       Object.assign(item, { score: 6, scoreWhy: `same run as ${busy.label}, which is in use` });
   }
+  for (const server of items) {
+    if (server.category !== 'orphans' && server.category !== 'dev-servers') continue;
+    if ((server.score ?? 10) > 5) continue;
+    const device = deviceServedBy(server, items, snap);
+    if (device) Object.assign(server, { score: 6, scoreWhy: device });
+  }
   return items.sort((a, b) => b.rssBytes - a.rssBytes);
+}
+
+/**
+ * Why a low-scored server must stay: a device scoring 6+ holds a TCP connection to one of its ports (an
+ * emulator's through the adb server), or is named for the worktree it runs in. A Metro looks idle while
+ * the app it serves is being driven.
+ */
+export function deviceServedBy(server: Item, items: Item[], snap: Snapshot): string | undefined {
+  const inUse = items.find(
+    (d) => (d.category === 'simulators' || d.category === 'emulators') && (d.score ?? 10) >= 6,
+  );
+  if (inUse === undefined) return undefined;
+  if (snap.listenPorts === null || snap.listeningPids === null)
+    return `listening sockets unreadable, and ${inUse.label} is in use`;
+  // Without its folder or the worktree list, the same-worktree link below cannot be ruled out.
+  if (server.cwd === undefined || snap.liveWorktreeSlugs === null)
+    return `its owner is unresolvable (working directory or worktree list unreadable), and ${inUse.label} is in use`;
+  const ports = new Set<number>();
+  for (const pid of server.pids) for (const port of snap.listenPorts?.get(pid) ?? []) ports.add(port);
+  if (ports.size === 0 && !server.pids.some((pid) => snap.listeningPids?.has(pid))) return undefined;
+  const adbServerPids = snap.procs
+    .filter((p) => commandName(p) === 'adb' && p.args.includes('fork-server'))
+    .map((p) => p.pid);
+  for (const device of items) {
+    if (device.category !== 'simulators' && device.category !== 'emulators') continue;
+    if ((device.score ?? 10) < 6) continue;
+    if (snap.connectedPorts === null)
+      return `TCP connections unreadable, and ${device.label} is in use`;
+    // An Android app reaches Metro through `adb reverse`, so the shared adb server holds that connection.
+    const viaPids =
+      device.category === 'emulators' ? [...device.pids, ...adbServerPids] : device.pids;
+    const isConnected = viaPids.some((pid) =>
+      [...(snap.connectedPorts?.get(pid) ?? [])].some((port) => ports.has(port)),
+    );
+    // A mapping outlives the connection: an app being reinstalled or relaunched reconnects to it.
+    if (device.category === 'emulators') {
+      const consolePort = Number(device.label.match(/ port (\d+)$/)?.[1]);
+      const reverse = snap.adbReversePorts?.get(consolePort);
+      if (!Number.isInteger(consolePort) || reverse === null)
+        return `adb reverse unreadable for ${device.label}, which is in use`;
+      if ([...(reverse ?? [])].some((port) => ports.has(port)))
+        return `serves ${device.label}, which is in use (adb reverse maps its port)`;
+    }
+    const slug = device.label.match(CONTROL_APP_DEVICE)?.[1];
+    const checkout = slug === undefined ? undefined : snap.worktreePaths?.get(slug);
+    const isSameWorktree =
+      device.category === 'simulators' &&
+      checkout !== undefined &&
+      (server.cwd === checkout || server.cwd?.startsWith(`${checkout}/`) === true);
+    if (isConnected || isSameWorktree)
+      return `serves ${device.label}, which is in use (${isConnected ? 'connected to its port' : 'same worktree'})`;
+  }
+  return undefined;
+}
+
+const EMULATOR_CONSOLE_PORTS = { first: 5554, last: 5682 };
+
+/** An emulator's console port (its serial is `emulator-<port>`): `-port N`, else the lowest even console-range port it listens on. */
+export function emulatorConsolePort(
+  args: string,
+  listening: Set<number> | undefined,
+): number | undefined {
+  const flag = Number(args.match(/-port\s+(\d+)/)?.[1]);
+  if (Number.isInteger(flag) && flag > 0) return flag;
+  const candidates = [...(listening ?? [])].filter(
+    (port) =>
+      port % 2 === 0 &&
+      port >= EMULATOR_CONSOLE_PORTS.first &&
+      port <= EMULATOR_CONSOLE_PORTS.last,
+  );
+  return candidates.length > 0 ? Math.min(...candidates) : undefined;
+}
+
+/** `adb reverse --list` lines (`host-11 tcp:8101 tcp:8101`) → the host ports mapped. */
+export function parseAdbReverse(text: string): Set<number> {
+  const ports = new Set<number>();
+  for (const line of text.split(/\r?\n/)) {
+    const port = Number(line.trim().split(/\s+/).at(-1)?.match(/^tcp:(\d+)$/)?.[1]);
+    if (Number.isInteger(port) && port > 0) ports.add(port);
+  }
+  return ports;
+}
+
+async function readAdbReversePorts(
+  procs: Proc[],
+  listenPorts: Map<number, Set<number>> | null,
+): Promise<Map<number, Set<number> | null>> {
+  const out = new Map<number, Set<number> | null>();
+  for (const p of procs) {
+    if (!commName(p).startsWith('qemu-system')) continue;
+    const port = emulatorConsolePort(p.args, listenPorts?.get(p.pid));
+    if (port === undefined || out.has(port)) continue;
+    const res = await run('adb', ['-s', `emulator-${port}`, 'reverse', '--list'], ADB_TIMEOUT_MS);
+    out.set(port, res.code === 0 ? parseAdbReverse(res.stdout) : null);
+  }
+  return out;
+}
+
+/** `lsof -nP -iTCP -Fpn`: each pid's local ports (listen) and the remote ports it is connected to. */
+export function parseTcpPorts(lsofOutput: string): {
+  local: Map<number, Set<number>>;
+  remote: Map<number, Set<number>>;
+} {
+  const local = new Map<number, Set<number>>();
+  const remote = new Map<number, Set<number>>();
+  const add = (map: Map<number, Set<number>>, pid: number, port: number) =>
+    map.set(pid, (map.get(pid) ?? new Set()).add(port));
+  let pid = 0;
+  for (const line of lsofOutput.split(/\r?\n/)) {
+    if (/^p\d+$/.test(line)) pid = Number(line.slice(1));
+    if (!line.startsWith('n') || !pid) continue;
+    const [here, there] = line.slice(1).split('->');
+    const localPort = Number(here?.match(/:(\d+)$/)?.[1]);
+    const remotePort = Number(there?.match(/:(\d+)$/)?.[1]);
+    if (Number.isInteger(localPort) && localPort > 0) add(local, pid, localPort);
+    if (Number.isInteger(remotePort) && remotePort > 0) add(remote, pid, remotePort);
+  }
+  return { local, remote };
 }
 
 const WORKTREE_GROUPS = new Set([
@@ -436,6 +833,7 @@ export function worktreeSlugOf(path: string | undefined): string | undefined {
 // A tree using this much CPU is doing work for someone; a simulator or emulator idles higher than a process.
 const BUSY_CPU_PCT: Partial<Record<Category, number>> = {
   orphans: 5,
+  'dev-servers': 5,
   simulators: 25,
   emulators: 30,
 };
@@ -454,28 +852,33 @@ function deviceFamily(item: Item): string | undefined {
   return stem.length === 2 && !name.startsWith('control-app-') ? stem.join('-') : undefined;
 }
 
-function scoreItem(
+/**
+ * How the idle signal may lower a score: `firm` never (busy, or an input it needs is unreadable), `soft` in
+ * every mode, `claim` (a session or its worktree still holds the item) only under --aggressive.
+ */
+type Hold = 'firm' | 'soft' | 'claim';
+type Scored = { score: number; scoreWhy: string; hold: Hold };
+
+function scoreByOwnership(
   item: Item,
   snap: Snapshot,
-  sessionWorktrees: Set<string>,
-  byPid: Map<number, Proc>,
-  now: number,
-): { score: number; scoreWhy: string } {
-  if (item.kind === 'protected') return { score: 10, scoreWhy: 'never stopped by this tool' };
-  const root = item.rootPid === undefined ? undefined : byPid.get(item.rootPid);
-  if (item.kind === 'candidate') {
-    if (item.category === 'idb-companion')
-      return { score: 1, scoreWhy: 'its simulator is not booted' };
-    if (root && isHungTestRunner(root, now))
-      return { score: 2, scoreWhy: 'a test run past 30 minutes with no parent' };
-    return { score: 1, scoreWhy: 'its worktree is gone' };
+  context: { sessionWorktrees: Set<string>; byPid: Map<number, Proc>; now: number },
+): Scored {
+  const { sessionWorktrees, byPid, now } = context;
+  if (item.ownerSessionPid !== undefined) {
+    if (snap.cpuPct === null)
+      return { score: 6, scoreWhy: 'CPU use unreadable, so it may be busy', hold: 'firm' };
+    const cpu = item.pids.reduce((sum, pid) => sum + (snap.cpuPct?.get(pid) ?? 0), 0);
+    if (cpu >= (BUSY_CPU_PCT[item.category] ?? 5))
+      return { score: 7, scoreWhy: `busy: ${Math.round(cpu)}% CPU`, hold: 'firm' };
+    return { score: 8, scoreWhy: `run by live session pid ${item.ownerSessionPid}`, hold: 'claim' };
   }
   const slug =
     item.category === 'simulators'
       ? item.label.match(CONTROL_APP_DEVICE)?.[1]
       : worktreeSlugOf(item.cwd);
   if (slug !== undefined && sessionWorktrees.has(slug))
-    return { score: 8, scoreWhy: `an agent session is open in worktree ${slug}` };
+    return { score: 8, scoreWhy: `an agent session is open in worktree ${slug}`, hold: 'claim' };
   const simCheckout =
     item.category === 'simulators' && slug !== undefined
       ? snap.worktreePaths?.get(slug)
@@ -486,44 +889,54 @@ function scoreItem(
     return {
       score: 8,
       scoreWhy: `its worktree still serves it: pid ${attended} listens from ${slug}`,
+      hold: 'claim',
     };
   if (listeners.length > 0)
     return {
       score: 6,
       scoreWhy: `only an orphaned listener (pid ${listeners[0]}) in ${slug} serves it; both go once the checkout is gone`,
+      hold: 'claim',
     };
   if (snap.cpuPct === null)
-    return { score: 6, scoreWhy: 'CPU use unreadable, so it may be busy' };
+    return { score: 6, scoreWhy: 'CPU use unreadable, so it may be busy', hold: 'firm' };
   const cpu = item.pids.reduce((sum, pid) => sum + (snap.cpuPct?.get(pid) ?? 0), 0);
   if (cpu >= (BUSY_CPU_PCT[item.category] ?? 5))
-    return { score: 7, scoreWhy: `busy: ${Math.round(cpu)}% CPU` };
+    return { score: 7, scoreWhy: `busy: ${Math.round(cpu)}% CPU`, hold: 'firm' };
   const ageMs = now - Date.parse(item.startedAt ?? '');
-  if (!(ageMs >= YOUNG_MS)) return { score: 6, scoreWhy: 'started under 30 minutes ago' };
+  if (!(ageMs >= YOUNG_MS))
+    return { score: 6, scoreWhy: 'started under 30 minutes ago', hold: 'soft' };
   if (simCheckout !== undefined && snap.listeningPids === null)
     return {
       score: 6,
       scoreWhy: 'listening sockets unreadable, so its worktree may still serve it',
+      hold: 'firm',
     };
   if (item.category === 'orphans') {
     if (item.cwd === undefined)
-      return { score: 6, scoreWhy: 'working directory unreadable, so its owner is unknown' };
+      return {
+        score: 6,
+        scoreWhy: 'working directory unreadable, so its owner is unknown',
+        hold: 'firm',
+      };
     if (snap.listeningPids === null)
-      return { score: 6, scoreWhy: 'listening sockets unreadable, so it may be serving' };
+      return { score: 6, scoreWhy: 'listening sockets unreadable, so it may be serving', hold: 'firm' };
     if (item.pids.some((pid) => snap.listeningPids?.has(pid)))
       return {
         score: 6,
-        scoreWhy: 'serves on a port; a dev server goes only once its checkout is gone',
+        scoreWhy: 'serves on a port and has not been idle long enough to go',
+        hold: 'soft',
       };
   }
   const checkout =
     item.category === 'simulators' && slug !== undefined ? snap.worktreePaths?.get(slug) : item.cwd;
   const touchedAt = checkout === undefined ? undefined : snap.checkoutTouchedAt?.(checkout);
   if (touchedAt === null)
-    return { score: 6, scoreWhy: 'its checkout is unreadable, so its activity is unknown' };
+    return { score: 6, scoreWhy: 'its checkout is unreadable, so its activity is unknown', hold: 'firm' };
   if (touchedAt !== undefined && now - touchedAt < ACTIVE_CHECKOUT_MS)
     return {
       score: 6,
       scoreWhy: `its checkout's git state changed ${Math.round((now - touchedAt) / 60_000)}m ago`,
+      hold: 'claim',
     };
   if (
     item.category === 'simulators' &&
@@ -531,12 +944,81 @@ function scoreItem(
     snap.liveWorktreeSlugs !== null &&
     !snap.liveWorktreeSlugs.has(slug)
   )
-    return { score: 2, scoreWhy: `idle, and worktree ${slug} is gone` };
+    return { score: 2, scoreWhy: `idle, and worktree ${slug} is gone`, hold: 'soft' };
   if (slug !== undefined)
-    return { score: 3, scoreWhy: `idle, and nothing has touched worktree ${slug} for an hour` };
+    return {
+      score: 3,
+      scoreWhy: `idle, and nothing has touched worktree ${slug} for an hour`,
+      hold: 'soft',
+    };
   return item.category === 'orphans'
-    ? { score: 4, scoreWhy: 'idle orphan outside any worktree; restarts on demand' }
-    : { score: 5, scoreWhy: 'idle for 30+ minutes and no session claims it' };
+    ? { score: 4, scoreWhy: 'idle orphan outside any worktree; restarts on demand', hold: 'soft' }
+    : { score: 5, scoreWhy: 'idle for 30+ minutes and no session claims it', hold: 'soft' };
+}
+
+function scoreItem(
+  item: Item,
+  snap: Snapshot,
+  context: { sessionWorktrees: Set<string>; byPid: Map<number, Proc>; now: number; aggressive: boolean },
+): { score: number; scoreWhy: string } {
+  const { byPid, now } = context;
+  if (item.kind === 'protected') return { score: 10, scoreWhy: 'never stopped by this tool' };
+  const root = item.rootPid === undefined ? undefined : byPid.get(item.rootPid);
+  if (item.kind === 'candidate') {
+    if (item.category === 'idb-companion')
+      return { score: 1, scoreWhy: 'its simulator is not booted' };
+    if (root && isHungTestRunner(root, now))
+      return { score: 2, scoreWhy: 'a test run past 30 minutes with no parent' };
+    return { score: 1, scoreWhy: 'its worktree is gone' };
+  }
+  const job = item.pids
+    .map((pid) => byPid.get(pid))
+    .find((p): p is Proc => p !== undefined && isHeavyJob(p));
+  if (job)
+    return { score: 7, scoreWhy: `runs work, never idle: pid ${job.pid} ${job.args.slice(0, 60)}` };
+  const client = deviceClientOf(item, snap.procs, now);
+  if (client)
+    return {
+      score: 7,
+      scoreWhy: `driven right now by pid ${client.pid}: ${client.args.slice(0, 60)}`,
+    };
+  const launched = recentlyLaunchedApp(item, byPid, now);
+  if (launched)
+    return {
+      score: 7,
+      scoreWhy: `its app was launched ${Math.round((now - Date.parse(launched.started)) / 60_000)}m ago (pid ${launched.pid})`,
+    };
+  const held = scoreByOwnership(item, snap, context);
+  if (held.hold === 'firm' || (held.hold === 'claim' && !context.aggressive)) return held;
+  // A claim returns before scoreByOwnership's own CPU checks, so an old idle average never outvotes busy-now.
+  if (snap.cpuPct === null) return held;
+  const cpuNow = item.pids.reduce((sum, pid) => sum + (snap.cpuPct?.get(pid) ?? 0), 0);
+  if (cpuNow >= (BUSY_CPU_PCT[item.category] ?? 5))
+    return held.score >= 7 ? held : { score: 7, scoreWhy: `busy: ${Math.round(cpuNow)}% CPU` };
+  const isOrphan = item.category === 'orphans' && item.ownerSessionPid === undefined;
+  // The ios-simulator MCP drives a simulator through its idb_companion, so that CPU is the device's too.
+  const companions =
+    item.category === 'simulators' && item.udid
+      ? snap.procs
+          .filter((p) => commName(p) === 'idb_companion' && p.args.toUpperCase().includes(item.udid ?? ''))
+          .map((p) => p.pid)
+      : [];
+  const evidence = idleEvidence({ ...item, pids: [...item.pids, ...companions] }, byPid, snap, {
+    now,
+    windowMs: isOrphan ? ORPHAN_IDLE_WINDOW_MS : IDLE_WINDOW_MS,
+  });
+  if (evidence.state === 'active') {
+    // A device driven in bursts (an adb dump, a screenshot) reads idle at any one instant but not over the window.
+    const usage = `${evidence.avgPct.toFixed(1)}% average CPU over ${Math.round(evidence.windowMs / 60_000)}m`;
+    return held.score >= 6
+      ? { ...held, scoreWhy: `${held.scoreWhy}; ${usage}` }
+      : { score: 6, scoreWhy: `in use: ${usage}` };
+  }
+  if (evidence.state === 'unknown' || held.score <= 2) return held;
+  if (isOrphan) return { score: 2, scoreWhy: `orphaned and ${idleText(evidence)}` };
+  if (held.hold === 'claim')
+    return { score: 5, scoreWhy: `${idleText(evidence)}, though ${held.scoreWhy}` };
+  return { score: 4, scoreWhy: `${idleText(evidence)}; no session claims it` };
 }
 
 // Idle CPU and an untouched checkout are not unused: hand testing leaves both quiet while Metro runs.
@@ -672,16 +1154,65 @@ export function parseCpu(text: string): Map<number, number> {
   return cpu;
 }
 
+function readCpuLedger(): CpuSample[] {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(CPU_LEDGER_PATH, 'utf8'));
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (s): s is CpuSample =>
+            typeof s === 'object' && s !== null && typeof s.at === 'number' &&
+            typeof s.cpu === 'object' &&
+            s.cpu !== null,
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Adds this moment's CPU times to the machine-wide ledger (a rename, so a concurrent reader never sees half a file). */
+export function writeCpuSample(cpuSeconds: Map<string, number>, at: number): CpuSample[] {
+  const history = readCpuLedger();
+  const next = addCpuSample(history, { at, cpu: Object.fromEntries(cpuSeconds) });
+  if (next.at(-1)?.at === at) {
+    try {
+      mkdirSync(dirname(CPU_LEDGER_PATH), { recursive: true });
+      const partial = `${CPU_LEDGER_PATH}.${process.pid}.tmp`;
+      writeFileSync(partial, JSON.stringify(next));
+      renameSync(partial, CPU_LEDGER_PATH);
+    } catch {
+      // A missed sample only delays the idle signal; it never makes anything look idle.
+    }
+  }
+  return history;
+}
+
+/** Feeds the ledger cheaply from a hook: one `ps`, and nothing at all while the newest sample is recent. */
+export async function recordCpuSampleIfDue(now = Date.now()): Promise<void> {
+  try {
+    if (now - statSync(CPU_LEDGER_PATH).mtimeMs < CPU_SAMPLE_SPACING_MS) return;
+  } catch {
+    // no ledger yet
+  }
+  const res = await run('ps', ['-axo', 'pid=,lstart=,time='], HOOK_PS_TIMEOUT_MS);
+  if (res.code === 0) writeCpuSample(parseCpuSeconds(res.stdout), now);
+}
+
 export async function collectSnapshot(): Promise<Snapshot> {
-  const [pidRes, commRes, cpuRes, listenRes, simRes, launchdRes] = await Promise.all([
+  const [pidRes, commRes, cpuRes, listenRes, simRes, launchdRes, timeRes, connectedRes] =
+    await Promise.all([
     run('ps', ['-axo', 'pid=,ppid=,rss=,lstart=,args=']),
     run('ps', ['-axo', 'pid=,comm=']),
     run('ps', ['-axo', 'pid=,%cpu=']),
-    run('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fp']),
+    run('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn']),
     run('xcrun', ['simctl', 'list', 'devices', 'booted', '-j']),
     run('launchctl', ['list']),
+    run('ps', ['-axo', 'pid=,lstart=,time=']),
+    run('lsof', ['-nP', '-iTCP', '-sTCP:ESTABLISHED', '-Fpn']),
   ]);
   const procs = parsePs(pidRes.stdout, commRes.stdout);
+  const cpuSeconds = timeRes.code === 0 ? parseCpuSeconds(timeRes.stdout) : null;
+  const cpuHistory = cpuSeconds ? writeCpuSample(cpuSeconds, Date.now()) : [];
   let bootedSims: { udid: string; name: string }[] | null = null;
   try {
     const devices = (
@@ -705,10 +1236,14 @@ export async function collectSnapshot(): Promise<Snapshot> {
     if (Number.isInteger(pid) && pid > 0) launchdJobPids.add(pid);
   }
   const rootish = procs
-    .filter((p) => p.ppid === 1 || AGENT_COMMANDS.has(commName(p)))
+    .filter(
+      (p) =>
+        p.ppid === 1 || AGENT_COMMANDS.has(commName(p)) || isDevServer(p) || isEmulatorProcess(p),
+    )
     .map((p) => p.pid);
-  const listeningPids =
-    listenRes.code === 0 || listenRes.stdout !== '' ? parseListeningPids(listenRes.stdout) : null;
+  // A failed or timed-out lsof lists only some sockets, which would read as "not serving".
+  const listeningPids = listenRes.code === 0 ? parseListeningPids(listenRes.stdout) : null;
+  const listenPorts = listenRes.code === 0 ? parseTcpPorts(listenRes.stdout).local : null;
   const cwds = await readCwds([...new Set([...rootish, ...(listeningPids ?? [])])]);
   const sessionDirs = procs
     .filter((p) => AGENT_COMMANDS.has(commName(p)))
@@ -727,17 +1262,48 @@ export async function collectSnapshot(): Promise<Snapshot> {
     selfPids: ancestorsOf(process.pid, procs),
     cpuPct: cpuRes.code === 0 ? parseCpu(cpuRes.stdout) : null,
     checkoutTouchedAt,
+    cpuSeconds,
+    cpuHistory,
+    listenPorts,
+    adbReversePorts: await readAdbReversePorts(procs, listenPorts),
+    // A timed-out or failed lsof leaves a partial list that would read as "nothing connected".
+    connectedPorts: connectedRes.code === 0 ? parseTcpPorts(connectedRes.stdout).remote : null,
   };
 }
 
-export async function buildReport(): Promise<Report> {
+/** Every CPU-heavy job on the machine, topmost per chain, with the session it runs under. */
+export function findWork(snap: Snapshot): WorkItem[] {
+  const byPid = new Map(snap.procs.map((p) => [p.pid, p]));
+  const work: WorkItem[] = [];
+  for (const p of snap.procs) {
+    if (!isHeavyJob(p)) continue;
+    const parent = parentSkippingShells(p, byPid);
+    if (parent && isHeavyJob(parent)) continue;
+    const owner = ownerSessionOf(p, byPid);
+    work.push({
+      pid: p.pid,
+      label: `${commandName(p)}: ${p.args.slice(0, 90)}`,
+      cpuPct: snap.cpuPct?.get(p.pid) ?? 0,
+      rssBytes: p.rssKb * KB,
+      ownerSessionPid: owner?.pid,
+      ownerSessionCwd: owner ? snap.cwds.get(owner.pid) : undefined,
+    });
+  }
+  return work.sort((a, b) => b.cpuPct - a.cpuPct);
+}
+
+export async function buildReport(opts: ClassifyOptions = {}): Promise<Report> {
   const [memory, snap] = await Promise.all([readMemory(), collectSnapshot()]);
   const notes: string[] = [];
   if (snap.bootedSims === null)
     notes.push('xcrun simctl failed — every idb_companion is kept this run');
   if (snap.liveWorktreeSlugs === null)
     notes.push('git worktree list failed — simulator owners unknown');
-  const items = classify(snap, Date.now());
+  if ((snap.cpuHistory ?? []).every((s) => Date.now() - s.at < ORPHAN_IDLE_WINDOW_MS))
+    notes.push(
+      `no CPU sample ${ORPHAN_IDLE_WINDOW_MS / 60_000}+ minutes old in ${CPU_LEDGER_PATH} yet — nothing can be proven idle this run`,
+    );
+  const items = classify(snap, Date.now(), opts);
   const docker = await run(
     'docker',
     ['stats', '--no-stream', '--format', '{{.Name}}\t{{.MemUsage}}'],
@@ -758,7 +1324,15 @@ export async function buildReport(): Promise<Report> {
       scoreWhy: 'never stopped by this tool',
     });
   }
-  return { mode: 'report', generatedAt: new Date().toISOString(), memory, items, notes };
+  return {
+    mode: 'report',
+    generatedAt: new Date().toISOString(),
+    aggressive: opts.aggressive === true,
+    memory,
+    items,
+    work: findWork(snap),
+    notes,
+  };
 }
 
 export function parseDockerBytes(usage: string): number {
@@ -787,6 +1361,7 @@ function printReport(r: Report): void {
   );
   for (const category of [
     'orphans',
+    'dev-servers',
     'idb-companion',
     'simulators',
     'emulators',
@@ -816,6 +1391,16 @@ function printReport(r: Report): void {
       const count = (k: Kind) => rest.filter((i) => i.kind === k).length;
       console.log(
         `  … ${rest.length} more (${count('candidate')} candidate, ${count('needsApproval')} approve?, ${count('protected')} kept) — full list in the JSON report`,
+      );
+    }
+  }
+  const work = r.work ?? [];
+  if (work.length > 0) {
+    console.log(`\n## work in progress — ${work.length} job(s), never stopped`);
+    for (const w of work.slice(0, PRETTY_LINES_PER_CATEGORY)) {
+      const owner = w.ownerSessionPid === undefined ? 'no live session' : `session pid ${w.ownerSessionPid}`;
+      console.log(
+        `  work       ${String(Math.round(w.cpuPct)).padStart(4)}% CPU ${gb(w.rssBytes).padStart(6)} GB  ${w.label} [pid ${w.pid}] — ${owner}`,
       );
     }
   }
@@ -893,6 +1478,50 @@ export function selectApproved(
   return { act, skipped };
 }
 
+/** The agent session this run belongs to: the nearest `claude`/`codex` above it, else its parent. */
+export function sessionPidOf(psPidPpidComm: string, pid: number): number | undefined {
+  const parents = new Map<number, { ppid: number; comm: string }>();
+  for (const line of psPidPpidComm.split(/\r?\n/)) {
+    const [, p, pp, comm] = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/) ?? [];
+    if (p !== undefined && pp !== undefined && comm !== undefined)
+      parents.set(Number(p), { ppid: Number(pp), comm: comm.trim() });
+  }
+  const seen = new Set<number>();
+  for (let cur = parents.get(pid)?.ppid; cur !== undefined && cur > 1 && !seen.has(cur); cur = parents.get(cur)?.ppid) {
+    seen.add(cur);
+    if (AGENT_COMMANDS.has(basename(parents.get(cur)?.comm ?? ''))) return cur;
+  }
+  return undefined;
+}
+
+function getActor(): string {
+  const account = process.env.CLAUDE_CONFIG_DIR ? basename(process.env.CLAUDE_CONFIG_DIR) : 'default account';
+  let session: number | undefined;
+  try {
+    session = sessionPidOf(execFileSync('ps', ['-axo', 'pid=,ppid=,comm='], { encoding: 'utf8', maxBuffer: 64 * KB * KB }), process.pid);
+  } catch {
+    session = undefined;
+  }
+  return `memory-reclaim pid ${process.pid} (${session === undefined ? `parent ${process.ppid}` : `session pid ${session}`}, ${account}) in ${process.cwd()}`;
+}
+
+/** Appends to the machine-wide stop log, keeping its newest STOP_LOG_MAX_LINES lines. */
+export function appendStopLog(lines: string[]): void {
+  if (lines.length === 0) return;
+  try {
+    mkdirSync(dirname(STOP_LOG_PATH), { recursive: true });
+    appendFileSync(STOP_LOG_PATH, `${lines.join('\n')}\n`);
+    const all = readFileSync(STOP_LOG_PATH, 'utf8').split(/\r?\n/).filter(Boolean);
+    if (all.length > STOP_LOG_MAX_LINES) {
+      const partial = `${STOP_LOG_PATH}.${process.pid}.tmp`;
+      writeFileSync(partial, `${all.slice(-STOP_LOG_MAX_LINES).join('\n')}\n`);
+      renameSync(partial, STOP_LOG_PATH);
+    }
+  } catch (error) {
+    console.error(`could not write the stop log ${STOP_LOG_PATH}: ${String(error)}`);
+  }
+}
+
 async function apply(
   saved: Report,
   categories: Set<Category>,
@@ -907,7 +1536,7 @@ async function apply(
       'report is over an hour old, undated or from the future — run the report again; processes change fast',
     );
   const before = await readMemory();
-  const fresh = await buildReport();
+  const fresh = await buildReport({ aggressive: saved.aggressive === true });
   const { act, skipped } = selectApproved(saved.items, fresh.items, {
     categories,
     pids,
@@ -915,24 +1544,31 @@ async function apply(
     ...(maxScore === undefined ? {} : { maxScore }),
   });
   const lines: string[] = [];
+  const logLines: string[] = [];
+  const actor = getActor();
+  const log = (item: Item, outcome: string) =>
+    logLines.push(formatStopLogLine(item, { at: new Date().toISOString(), outcome, actor }));
   for (const item of act) {
     if (item.category === 'simulators' && item.udid) {
       const res = await run('xcrun', ['simctl', 'shutdown', item.udid], 120_000);
+      log(item, res.code === 0 ? 'shut down' : `shutdown failed (simctl exit ${res.code})`);
       lines.push(
-        `${res.code === 0 ? 'ok  ' : 'FAIL'} [simulators] ${item.label} ${gb(item.rssBytes)} GB — ${res.code === 0 ? 'shut down (not deleted)' : `simctl exit ${res.code}`}`,
+        `${res.code === 0 ? 'ok  ' : 'FAIL'} [simulators] ${item.label} ${gb(item.rssBytes)} GB — ${res.code === 0 ? 'shut down (not deleted)' : `simctl exit ${res.code}`} · ${item.scoreWhy ?? item.reason}`,
       );
       continue;
     }
     const { survivors, killed } = await terminate(item.pids, sigkill);
+    log(item, survivors.length === 0 ? 'stopped' : `partly stopped, alive: ${survivors.join(',')}`);
     const how = killed ? 'SIGTERM then SIGKILL' : 'SIGTERM';
     const outcome =
       survivors.length === 0
         ? `${how}, ${item.pids.length} process(es) exited`
         : `still alive after ${how}: ${survivors.join(',')}${sigkill ? '' : ' (re-run with --sigkill)'}`;
     lines.push(
-      `${survivors.length === 0 ? 'ok  ' : 'PART'} [${item.category}] ${item.label} ${gb(item.rssBytes)} GB — ${outcome}`,
+      `${survivors.length === 0 ? 'ok  ' : 'PART'} [${item.category}] ${item.label} ${gb(item.rssBytes)} GB — ${outcome} · ${item.scoreWhy ?? item.reason}`,
     );
   }
+  appendStopLog(logLines);
   for (const s of skipped) lines.push(`skip [${s.item.category}] ${s.item.label} — ${s.why}`);
   await new Promise((r) => setTimeout(r, 3000));
   const after = await readMemory();
@@ -944,12 +1580,22 @@ async function apply(
   );
   for (const l of lines) console.log(`  ${l}`);
   if (lines.length === 0) console.log('  nothing approved matched the saved report');
+  else if (logLines.length > 0) console.log(`Logged to ${STOP_LOG_PATH} for the sessions that owned them.`);
 }
 
 export const STALE_MAX_SCORE = 5;
 
+/** What a --stale or --aggressive run stops, before it re-scores each item. */
+export function selectStale(items: Item[]): Item[] {
+  return items.filter(
+    (i) => APPLY_CATEGORIES.includes(i.category) && i.kind !== 'protected' && (i.score ?? 10) <= STALE_MAX_SCORE,
+  );
+}
+
 const USAGE = `Usage:
+  node memory-reclaim.mts --aggressive   the pre-hold run: --stale plus idle devices and dev servers live sessions own
   node memory-reclaim.mts --stale        report, then stop everything scored ${STALE_MAX_SCORE} or lower (no approval needed)
+  add --dry-run to either to print what it would stop and stop nothing; --save <report.json> keeps its report
   node memory-reclaim.mts [--pretty] [--save <report.json>]
   node memory-reclaim.mts --apply --from <report.json> --category a,b [--pid <pid,...>] [--udid <udid,...>] [--max-score <1-9>] [--sigkill]
   --max-score N also stops every item scored N or lower (1-10, how likely it is still needed)
@@ -993,6 +1639,8 @@ function isMainModule(): boolean {
 if (isMainModule()) {
   const flags = new Set([
     'stale',
+    'aggressive',
+    'dry-run',
     'apply',
     'from',
     'category',
@@ -1016,13 +1664,21 @@ if (isMainModule()) {
     const args = parseArgs(process.argv.slice(2), flags, valued);
     if (args.help) {
       console.log(USAGE);
-    } else if (args.stale) {
-      const report = await buildReport();
-      const saved = join(tmpdir(), 'memory-reclaim-stale.json');
+    } else if (args.stale || args.aggressive) {
+      const report = await buildReport({ aggressive: args.aggressive === true });
+      const saved =
+        typeof args.save === 'string' ? args.save : join(tmpdir(), 'memory-reclaim-stale.json');
       writeFileSync(saved, `${JSON.stringify(report, null, 2)}\n`);
       printReport(report);
-      console.log(`\nStopping everything scored ${STALE_MAX_SCORE} or lower (report: ${saved}):`);
-      await apply(report, new Set(APPLY_CATEGORIES), new Set(), new Set(), true, STALE_MAX_SCORE);
+      const stale = selectStale(report.items);
+      if (args['dry-run']) {
+        console.log(`\nWould stop ${stale.length} item(s) scored ${STALE_MAX_SCORE} or lower (report: ${saved}):`);
+        for (const i of stale)
+          console.log(`  ${i.score}/10 ${gb(i.rssBytes).padStart(6)} GB [${i.category}] ${i.label} — ${i.scoreWhy}`);
+      } else {
+        console.log(`\nStopping everything scored ${STALE_MAX_SCORE} or lower (report: ${saved}):`);
+        await apply(report, new Set(APPLY_CATEGORIES), new Set(), new Set(), true, STALE_MAX_SCORE);
+      }
     } else if (args.apply) {
       const categories = list(args.category);
       const bad = categories.filter((c) => !APPLY_CATEGORIES.includes(c as Category));
@@ -1049,6 +1705,7 @@ if (isMainModule()) {
         maxScore,
       );
     } else {
+      if (args['dry-run']) throw new Error('--dry-run goes with --stale or --aggressive');
       const report = await buildReport();
       if (typeof args.save === 'string')
         writeFileSync(args.save, `${JSON.stringify(report, null, 2)}\n`);
