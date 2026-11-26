@@ -540,6 +540,38 @@ test('a control-app simulator whose worktree was touched within the hour scores 
   assert.equal(items.find((i) => i.udid === SIM)?.score, 6);
 });
 
+test('an idle control-app simulator scores 8 while a dev server listens from its worktree', () => {
+  const OLD = 'Tue Nov 10 08:00:00 2026';
+  const WT = '/repo/.claude/worktrees/fix/x';
+  const procs = [
+    {
+      ...proc(
+        60,
+        1,
+        'launchd_sim',
+        `launchd_sim /Users/u/Library/Developer/CoreSimulator/Devices/${SIM}/data/x.plist`,
+      ),
+      started: OLD,
+    },
+  ];
+  const score = (over: Partial<Snapshot>) =>
+    classify(
+      snapshot(procs, {
+        worktreePaths: new Map([['fix-x', WT]]),
+        checkoutTouchedAt: () => NOW - 3 * 3_600_000,
+        cpuPct: new Map(),
+        listeningPids: new Set([70]),
+        ...over,
+      }),
+      NOW,
+    ).find((i) => i.udid === SIM)?.score;
+
+  assert.equal(score({ cwds: new Map([[70, `${WT}/apps/mobile`]]) }), 8);
+  assert.equal(score({ cwds: new Map([[70, `${WT}-other`]]) }), 3);
+  assert.equal(score({ cwds: new Map() }), 3);
+  assert.equal(score({ listeningPids: null }), 6);
+});
+
 test('parseListeningPids reads lsof -F p lines only', () => {
   assert.deepEqual([...parseListeningPids('p101\nf12\np202\n')], [101, 202]);
 });
