@@ -69,8 +69,11 @@ stop condition, and let the session that sent it end.
 
 Any simulator or emulator a session boots comes up muted (owner, 2026-11-26): the `PostToolUse` hook
 `.claude/hooks/device-mute-on-boot.mts` sees `simctl boot` or `emulator -avd` and runs `node tools/device-mute.mts sweep`,
-which presses the simulator's own volume-down to 0 or sets the emulator's streams to their minimum while playback keeps
-running; mute by hand with `node tools/device-mute.mts booted`, and never change the Mac's volume or output device instead.
+which presses the simulator's own volume-down to 0 while playback keeps running; mute by hand with
+`node tools/device-mute.mts booted`, and never change the Mac's volume or output device instead. An Android emulator
+is muted only once its adbd is already root (the sweep never runs `adb root`, since that drops `adb reverse` mappings),
+so launch every emulator with `-no-audio` and run `adb root` right after boot, before any install or `adb reverse`;
+the sweep then sets its streams to their minimum, never touching one already at 0.
 
 ## Where videos live
 

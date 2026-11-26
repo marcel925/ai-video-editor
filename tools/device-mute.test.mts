@@ -4,13 +4,12 @@ import { test } from 'node:test';
 import {
     getIsDeviceBootCommand,
     getIsMutedReading,
+    getIsStreamAboveFloor,
     getNativeToolPath,
     getStreamVolumeArgs,
     parseBootedSimulatorUdids,
     parseEmulatorSerials,
     parseMuteArgs,
-    parseReverseMappings,
-    parseReverseSnapshot,
     parseStreamVolume,
 } from './device-mute.mts';
 
@@ -54,13 +53,6 @@ test('booted simulators and running emulators are read from simctl and adb outpu
     assert.deepEqual(parseEmulatorSerials('List of devices attached\nemulator-5646\tdevice\nemulator-5650\toffline\nR58M\tdevice\n'), ['emulator-5646']);
 });
 
-test('adb reverse mappings survive the adbd restart that adb root causes', () => {
-    assert.deepEqual(parseReverseMappings('emulator-5680 tcp:8123 tcp:8123\nemulator-5680 tcp:9090 tcp:9091\n'), [
-        ['tcp:8123', 'tcp:8123'],
-        ['tcp:9090', 'tcp:9091'],
-    ]);
-    assert.deepEqual(parseReverseMappings(''), []);
-});
 
 test('each native tool is cached per name and source version', () => {
     assert.equal(getNativeToolPath('reader', 'a'), getNativeToolPath('reader', 'a'));
@@ -74,11 +66,10 @@ test('only a clean zero reading counts as muted', () => {
     assert.equal(getIsMutedReading(''), false);
 });
 
-
-
-test('a saved reverse snapshot reads back as pairs, dropping malformed entries', () => {
-    assert.deepEqual(parseReverseSnapshot('[["tcp:8177","tcp:8177"],["tcp:1"],[2,3]]'), [['tcp:8177', 'tcp:8177']]);
-    assert.deepEqual(parseReverseSnapshot('{}'), []);
-    assert.deepEqual(parseReverseSnapshot(''), []);
-    assert.deepEqual(parseReverseSnapshot('[["tcp:8'), []);
+test('a stream at 0 or at its minimum is left alone, so a muted alarm is never raised to 1', () => {
+    assert.equal(getIsStreamAboveFloor({ current: 0, min: 1, max: 7 }), false);
+    assert.equal(getIsStreamAboveFloor({ current: 1, min: 1, max: 7 }), false);
+    assert.equal(getIsStreamAboveFloor({ current: 0, min: 0, max: 15 }), false);
+    assert.equal(getIsStreamAboveFloor({ current: 5, min: 0, max: 15 }), true);
+    assert.equal(getIsStreamAboveFloor({ current: 6, min: 1, max: 7 }), true);
 });

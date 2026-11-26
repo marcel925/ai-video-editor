@@ -9,12 +9,12 @@
  * iOS: the simulated device has its own volume, moved only by its volume buttons, so this presses volume-down
  * (sim-volume-buttons.m) until the device reads 0 (sim-volume-read.m). SpringBoard ignores the buttons for up to
  * a minute after `bootstatus` returns, hence the retry. Android: every audio stream goes to its minimum via adb,
- * which sticks only as root. `sweep` mutes every booted device that is not muted yet, every 10 s for five
+ * which sticks only as root, so only an emulator already root is changed (`-no-audio` covers the rest). `sweep` mutes every booted device that is not muted yet, every 10 s for five
  * minutes, so a device still booting is caught too; each boot request starts its own sweep.
  */
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -53,6 +53,11 @@ export function parseStreamVolume(output: string): StreamVolumeInterface | undef
     const match = /volume is (\d+) in range \[(\d+)\.\.(\d+)\]/.exec(output);
     if (!match) return undefined;
     return { current: Number(match[1]), min: Number(match[2]), max: Number(match[3]) };
+}
+
+/** Above its floor: neither at 0 (Android's mute) nor at its minimum, the lowest `--set` can reach. Never raises a 0. */
+export function getIsStreamAboveFloor(volume: StreamVolumeInterface): boolean {
+    return volume.current !== 0 && volume.current > volume.min;
 }
 
 export function getStreamVolumeArgs(serial: string, stream: number, value?: number): string[] {
@@ -95,33 +100,6 @@ export function parseEmulatorSerials(adbDevicesOutput: string): string[] {
         if (match?.[1]) serials.push(match[1]);
     }
     return serials;
-}
-
-/** `adb reverse --list` lines (`<serial> tcp:8081 tcp:8081`) as the `[remote, local]` pairs to re-create. */
-export function parseReverseMappings(output: string): [string, string][] {
-    const mappings: [string, string][] = [];
-    for (const line of output.split(/\r?\n/)) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length >= 3 && parts[1] && parts[2]) mappings.push([parts[1], parts[2]]);
-    }
-    return mappings;
-}
-
-/** A saved snapshot back as `[remote, local]` pairs; a pair that is not two strings, or an unreadable file, gives none. */
-export function parseReverseSnapshot(text: string): [string, string][] {
-    const mappings: [string, string][] = [];
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(text);
-    } catch {
-        // A torn write cannot be recovered, and keeping it would block the mute on every retry.
-        return mappings;
-    }
-    if (!Array.isArray(parsed)) return mappings;
-    for (const pair of parsed as unknown[]) {
-        if (Array.isArray(pair) && typeof pair[0] === 'string' && typeof pair[1] === 'string') mappings.push([pair[0], pair[1]]);
-    }
-    return mappings;
 }
 
 export function getNativeToolPath(name: string, source: string): string {
@@ -191,40 +169,20 @@ async function getUnmutedStreams(serial: string): Promise<{ stream: number; min:
     const unmuted: { stream: number; min: number }[] = [];
     for (const stream of ANDROID_MUTED_STREAMS) {
         const volume = parseStreamVolume(await run('adb', getStreamVolumeArgs(serial, stream)));
-        if (volume && volume.current !== volume.min) unmuted.push({ stream, min: volume.min });
+        if (volume && getIsStreamAboveFloor(volume)) unmuted.push({ stream, min: volume.min });
     }
     return unmuted;
 }
 
-export function getReverseSnapshotPath(serial: string): string {
-    return join(CACHE_DIR, `reverse-${serial}.json`);
-}
-
 /**
- * As the shell user `--set` is accepted and silently ignored (measured on an API 35 emulator); as root it sticks.
- * Restarting adbd as root drops `adb reverse` mappings (a session's Metro link), so they are written to a file
- * first, by exactly one process (`wx`), and put back by whichever run next reaches this point, even after a crash.
+ * As the shell user `--set` is accepted and silently ignored (measured on an API 35 emulator); as root it sticks. The
+ * sweep never runs `adb root` itself: the restart drops `adb reverse` mappings, and a session may be creating one
+ * at that moment. A launch recipe roots right after boot (CLAUDE.md → "Test devices stay muted"), and
+ * `-no-audio` keeps an emulator that is not root silent anyway.
  */
-async function ensureAdbRoot(serial: string): Promise<void> {
-    const snapshotPath = getReverseSnapshotPath(serial);
-    if ((await run('adb', ['-s', serial, 'shell', 'id', '-u'])).trim() !== '0') {
-        if (!existsSync(snapshotPath)) {
-            // No snapshot, no restart: an unreadable list throws here and the sweep retries.
-            const mappings = parseReverseMappings(await run('adb', ['-s', serial, 'reverse', '--list']));
-            mkdirSync(CACHE_DIR, { recursive: true });
-            try {
-                writeFileSync(snapshotPath, JSON.stringify(mappings), { flag: 'wx' });
-            } catch {
-                // Another run snapshotted first; its file is the one restored.
-            }
-        }
-        await run('adb', ['-s', serial, 'root']);
-    }
-    if (!existsSync(snapshotPath)) return;
-    const mappings = parseReverseSnapshot(readFileSync(snapshotPath, 'utf8'));
-    await run('adb', ['-s', serial, 'wait-for-device'], BOOT_WAIT_TIMEOUT_MILLISECONDS);
-    for (const [remote, local] of mappings) await run('adb', ['-s', serial, 'reverse', remote, local]);
-    rmSync(snapshotPath, { force: true });
+async function assertAdbRoot(serial: string): Promise<void> {
+    if ((await run('adb', ['-s', serial, 'shell', 'id', '-u'])).trim() === '0') return;
+    throw new Error(`${serial}: adbd is not root, so its streams cannot be set; launch it with -no-audio and run adb root right after boot`);
 }
 
 export async function muteEmulator(serial: string): Promise<string> {
@@ -232,7 +190,7 @@ export async function muteEmulator(serial: string): Promise<string> {
     await run('adb', ['-s', serial, 'wait-for-device', 'shell', waitForBoot], BOOT_WAIT_TIMEOUT_MILLISECONDS);
     const unmuted = await getUnmutedStreams(serial);
     if (unmuted.length === 0) return `${serial} already muted`;
-    await ensureAdbRoot(serial);
+    await assertAdbRoot(serial);
     for (const { stream, min } of unmuted) await run('adb', getStreamVolumeArgs(serial, stream, min));
     const stillUnmuted = await getUnmutedStreams(serial);
     if (stillUnmuted.length > 0) throw new Error(`${serial} streams ${stillUnmuted.map((s) => s.stream).join(', ')} did not take their minimum volume`);
