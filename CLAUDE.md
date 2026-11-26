@@ -35,14 +35,29 @@ and ask.
 ## Room on the machine
 
 On a Mac, before launching a sub-agent, a render, a transcription or a simulator, read
-`sysctl -n kern.memorystatus_vm_pressure_level kern.memorystatus_level hw.ncpu vm.loadavg`. Launch while
-memory has room and the 1-minute load is under 6x the core count. **Room** = pressure level `1` (normal), or
-`2` (warn) with `kern.memorystatus_level` (system-wide free-memory %, the number `memory_pressure` prints)
-≥ 20. **No room** at `4` (critical), at any level with free < 20%, or at `2` with the free % unreadable.
-After a no-room reading, launch again only once room has held for a sustained minute. Otherwise run
-`node tools/memory-reclaim.mts --stale` first: it stops leftovers that are unlikely to still be needed,
-never a session, an app or Docker ([`machine-memory-reclaim`](skills/machine-memory-reclaim/SKILL.md)
-has the scale). Then re-check, and hold only if there is still no room.
+`sysctl -n kern.memorystatus_vm_pressure_level kern.memorystatus_level hw.ncpu vm.loadavg` and the CPU
+idle, `top -l 2 -n 0 -s 1 | grep 'CPU usage' | tail -1` (the idle % of the second sample).
+
+- **Memory gates every launch.** **Room** = pressure level `1` (normal), or `2` (warn) with
+  `kern.memorystatus_level` (system-wide free-memory %, the number `memory_pressure` prints) ≥ 20.
+  **No room** at `4` (critical), at any level with free < 20%, or at `2` with the free % unreadable.
+  Any single reading with room is enough to launch. Memory is what crashes the machine.
+- **Measured CPU idle gates only CPU-heavy work**: renders, transcriptions, simulators and emulators,
+  builds, test suites and large local runs. There is CPU room while idle is ≥ 10%, and one reading may
+  start floor(idle / 10) CPU-heavy jobs (at least one), each re-checking memory before it starts. Only
+  when idle cannot be read, fall back to the 1-minute load: room while it is under 12x the core count.
+- **Light agents launch at any CPU level while memory has room**: review-only, read-only and API-bound
+  agents and doc edits.
+- **The gate only gates launches**: work already running is never stopped by it.
+
+Why idle and not the load: macOS counts waiting threads in the load average. On one 18-core laptop the
+1-minute load swung 164 → 547 → 846 within about 10 s while measured CPU idle held at 17.7–19.1%, so a
+load gate held work back while cores sat idle.
+
+With no room, run `node tools/memory-reclaim.mts --stale` first: it stops leftovers that are unlikely to
+still be needed, never a session, an app or Docker
+([`machine-memory-reclaim`](skills/machine-memory-reclaim/SKILL.md) has the scale). Then re-check, and
+hold only if there is still no room.
 
 **Decide at task start whether it can run unattended in the cloud** (an `Agent` with
 `isolation: "remote"`). Only a change to code or docs qualifies, and only when proving it needs no video
