@@ -54,10 +54,14 @@ Why idle and not the load: macOS counts waiting threads in the load average. On 
 1-minute load swung 164 → 547 → 846 within about 10 s while measured CPU idle held at 17.7–19.1%, so a
 load gate held work back while cores sat idle.
 
-With no room, run `node tools/memory-reclaim.mts --stale` first: it stops leftovers that are unlikely to
-still be needed, never a session, an app or Docker
-([`machine-memory-reclaim`](skills/machine-memory-reclaim/SKILL.md) has the scale). Then re-check, and
-hold only if there is still no room.
+With no room, **free what is idle, then re-check** (owner, 2026-11-18, 2026-11-26):
+`node tools/memory-reclaim.mts --aggressive` stops, without asking, every orphan and idle device or dev
+server, another session's too, scoring 5/10 or below, never a session, app, Docker or running job.
+Signal: [`machine-memory-reclaim`](skills/machine-memory-reclaim/SKILL.md). Hold only if there is still no room.
+
+**Stop each process you started the moment your next steps stop needing it, mid-task too**, not only at
+the end: background shells, monitors, sub-agents, dev servers, devices. Name any you keep and why in the
+final reply; never stop another session's by hand ([`machine-memory-reclaim`](skills/machine-memory-reclaim/SKILL.md#your-own-session)).
 
 **Decide at task start whether it can run unattended in the cloud** (an `Agent` with
 `isolation: "remote"`). Only a change to code or docs qualifies, and only when proving it needs no video
