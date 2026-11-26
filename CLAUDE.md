@@ -1,5 +1,15 @@
 # Agent rules
 
+**Before the first edit of any multi-part or 20+ minute task, parallelise: see "Move fast" below.**
+
+## Move fast: parallelise
+
+This is a step that always happens, not an option. For every task with two or more independent pieces or
+more than about 20 minutes of work, before the first edit, split it and launch the pieces in one message:
+sub-agents for pieces that need this session's context, and separate sessions for self-contained pieces,
+one worktree per piece. Say in the first reply who runs each piece. The memory gate in "Room on the
+machine" still applies to every launch.
+
 ## This repo is public
 
 Everything pushed here is public. Show the owner each change and push only when they say so. Some editing
