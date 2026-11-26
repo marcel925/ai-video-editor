@@ -572,6 +572,39 @@ test('an idle control-app simulator scores 8 while a dev server listens from its
   assert.equal(score({ listeningPids: null }), 6);
 });
 
+test('an orphaned listener in the worktree holds its simulator at 6, not 8', () => {
+  const OLD = 'Tue Nov 10 08:00:00 2026';
+  const WT = '/repo/.claude/worktrees/fix/x';
+  const sim = {
+    ...proc(
+      60,
+      1,
+      'launchd_sim',
+      `launchd_sim /Users/u/Library/Developer/CoreSimulator/Devices/${SIM}/data/x.plist`,
+    ),
+    started: OLD,
+  };
+  const node = (pid: number, ppid: number): Proc => ({ ...proc(pid, ppid, 'node'), started: OLD });
+  const score = (procs: Proc[], listening: number[]) =>
+    classify(
+      snapshot([sim, ...procs], {
+        worktreePaths: new Map([['fix-x', WT]]),
+        checkoutTouchedAt: () => NOW - 3 * 3_600_000,
+        cpuPct: new Map(),
+        cwds: new Map([
+          [70, `${WT}/apps/mobile`],
+          [71, `${WT}/apps/web`],
+        ]),
+        listeningPids: new Set(listening),
+      }),
+      NOW,
+    ).find((i) => i.udid === SIM)?.score;
+
+  assert.equal(score([node(70, 1)], [70]), 6);
+  assert.equal(score([node(70, 1), node(71, 50)], [70, 71]), 8);
+  assert.equal(score([node(70, 50)], [70]), 8);
+});
+
 test('parseListeningPids reads lsof -F p lines only', () => {
   assert.deepEqual([...parseListeningPids('p101\nf12\np202\n')], [101, 202]);
 });

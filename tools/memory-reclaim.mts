@@ -480,11 +480,17 @@ function scoreItem(
     item.category === 'simulators' && slug !== undefined
       ? snap.worktreePaths?.get(slug)
       : undefined;
-  const server = simCheckout === undefined ? undefined : listenerIn(simCheckout, snap);
-  if (server !== undefined)
+  const listeners = simCheckout === undefined ? [] : listenersIn(simCheckout, snap);
+  const attended = listeners.find((pid) => byPid.get(pid)?.ppid !== 1);
+  if (attended !== undefined)
     return {
       score: 8,
-      scoreWhy: `its worktree still serves it: pid ${server} listens from ${slug}`,
+      scoreWhy: `its worktree still serves it: pid ${attended} listens from ${slug}`,
+    };
+  if (listeners.length > 0)
+    return {
+      score: 6,
+      scoreWhy: `only an orphaned listener (pid ${listeners[0]}) in ${slug} serves it; both go once the checkout is gone`,
     };
   if (snap.cpuPct === null)
     return { score: 6, scoreWhy: 'CPU use unreadable, so it may be busy' };
@@ -534,12 +540,11 @@ function scoreItem(
 }
 
 // Idle CPU and an untouched checkout are not unused: hand testing leaves both quiet while Metro runs.
-function listenerIn(checkout: string, snap: Snapshot): number | undefined {
-  for (const pid of snap.listeningPids ?? []) {
+function listenersIn(checkout: string, snap: Snapshot): number[] {
+  return [...(snap.listeningPids ?? [])].filter((pid) => {
     const cwd = snap.cwds.get(pid);
-    if (cwd === checkout || cwd?.startsWith(`${checkout}/`)) return pid;
-  }
-  return undefined;
+    return cwd === checkout || cwd?.startsWith(`${checkout}/`) === true;
+  });
 }
 
 export function isPathGone(path: string): boolean {
