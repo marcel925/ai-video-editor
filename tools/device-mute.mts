@@ -9,12 +9,12 @@
  * iOS: the simulated device has its own volume, moved only by its volume buttons, so this presses volume-down
  * (sim-volume-buttons.m) until the device reads 0 (sim-volume-read.m). SpringBoard ignores the buttons for up to
  * a minute after `bootstatus` returns, hence the retry. Android: every audio stream goes to its minimum via adb,
- * which sticks only as root. `sweep` mutes every booted device that is not muted yet, repeatedly for a few
- * minutes, so a device still booting is caught too; one sweep runs at a time and a new request extends it.
+ * which sticks only as root. `sweep` mutes every booted device that is not muted yet, every 10 s for five
+ * minutes, so a device still booting is caught too; each boot request starts its own sweep.
  */
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,7 +26,6 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const BUTTONS_SOURCE = join(SCRIPT_DIR, 'sim-volume-buttons.m');
 const READER_SOURCE = join(SCRIPT_DIR, 'sim-volume-read.m');
 export const CACHE_DIR = join(homedir(), 'Library/Caches/device-mute');
-const SWEEP_LOCK = join(CACHE_DIR, 'sweep.lock');
 /** Music, ring, alarm, notification, system and accessibility: everything an app, TTS or the OS plays. */
 export const ANDROID_MUTED_STREAMS = [1, 2, 3, 4, 5, 10] as const;
 /** iOS volume moves in sixteenths, so sixteen presses reach 0 from any level. */
@@ -108,6 +107,23 @@ export function parseReverseMappings(output: string): [string, string][] {
     return mappings;
 }
 
+/** A saved snapshot back as `[remote, local]` pairs; a pair that is not two strings, or an unreadable file, gives none. */
+export function parseReverseSnapshot(text: string): [string, string][] {
+    const mappings: [string, string][] = [];
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(text);
+    } catch {
+        // A torn write cannot be recovered, and keeping it would block the mute on every retry.
+        return mappings;
+    }
+    if (!Array.isArray(parsed)) return mappings;
+    for (const pair of parsed as unknown[]) {
+        if (Array.isArray(pair) && typeof pair[0] === 'string' && typeof pair[1] === 'string') mappings.push([pair[0], pair[1]]);
+    }
+    return mappings;
+}
+
 export function getNativeToolPath(name: string, source: string): string {
     return join(CACHE_DIR, `${name}-${createHash('sha256').update(source).digest('hex').slice(0, 12)}`);
 }
@@ -118,14 +134,7 @@ export function getIsMutedReading(output: string): boolean {
     return Number.isFinite(volume) && volume === 0;
 }
 
-export function getIsSweepCommand(psCommand: string): boolean {
-    return /device-mute\.mts\s+sweep\b/.test(psCommand);
-}
 
-/** The sweep keeps going until this long after its lock was last touched, so each new boot request extends it. */
-export function getSweepDeadline(lockTouchedAt: number): number {
-    return lockTouchedAt + SWEEP_WINDOW_MILLISECONDS;
-}
 
 async function run(command: string, args: readonly string[], timeout = COMMAND_TIMEOUT_MILLISECONDS): Promise<string> {
     const { stdout } = await execFileAsync(command, [...args], { maxBuffer: 16 * 1024 * 1024, timeout });
@@ -187,22 +196,35 @@ async function getUnmutedStreams(serial: string): Promise<{ stream: number; min:
     return unmuted;
 }
 
-/** As the shell user `--set` is accepted and silently ignored (measured on an API 35 emulator); as root it sticks. */
-/** Mappings taken before an `adb root` and not yet put back, kept across retries until they are. */
-const pendingReverseMappings = new Map<string, [string, string][]>();
+export function getReverseSnapshotPath(serial: string): string {
+    return join(CACHE_DIR, `reverse-${serial}.json`);
+}
 
+/**
+ * As the shell user `--set` is accepted and silently ignored (measured on an API 35 emulator); as root it sticks.
+ * Restarting adbd as root drops `adb reverse` mappings (a session's Metro link), so they are written to a file
+ * first, by exactly one process (`wx`), and put back by whichever run next reaches this point, even after a crash.
+ */
 async function ensureAdbRoot(serial: string): Promise<void> {
+    const snapshotPath = getReverseSnapshotPath(serial);
     if ((await run('adb', ['-s', serial, 'shell', 'id', '-u'])).trim() !== '0') {
-        // Restarting adbd as root drops `adb reverse` mappings, so a session's Metro link is put back.
-        // No snapshot, no restart: an unreadable list would lose the mappings, so the sweep retries instead.
-        pendingReverseMappings.set(serial, parseReverseMappings(await run('adb', ['-s', serial, 'reverse', '--list'])));
+        if (!existsSync(snapshotPath)) {
+            // No snapshot, no restart: an unreadable list throws here and the sweep retries.
+            const mappings = parseReverseMappings(await run('adb', ['-s', serial, 'reverse', '--list']));
+            mkdirSync(CACHE_DIR, { recursive: true });
+            try {
+                writeFileSync(snapshotPath, JSON.stringify(mappings), { flag: 'wx' });
+            } catch {
+                // Another run snapshotted first; its file is the one restored.
+            }
+        }
         await run('adb', ['-s', serial, 'root']);
     }
-    const mappings = pendingReverseMappings.get(serial);
-    if (!mappings) return;
+    if (!existsSync(snapshotPath)) return;
+    const mappings = parseReverseSnapshot(readFileSync(snapshotPath, 'utf8'));
     await run('adb', ['-s', serial, 'wait-for-device'], BOOT_WAIT_TIMEOUT_MILLISECONDS);
     for (const [remote, local] of mappings) await run('adb', ['-s', serial, 'reverse', remote, local]);
-    pendingReverseMappings.delete(serial);
+    rmSync(snapshotPath, { force: true });
 }
 
 export async function muteEmulator(serial: string): Promise<string> {
@@ -224,27 +246,11 @@ export function spawnDetachedMute(args: readonly string[]): void {
     const scriptPath = fileURLToPath(import.meta.url);
     const child = spawn(process.execPath, [scriptPath, ...args.filter((arg) => arg !== '--detach')], { detached: true, stdio: ['ignore', log, log] });
     child.unref();
+    closeSync(log);
 }
 
-function getLiveSweepPid(): number | undefined {
-    try {
-        const pid = Number(readFileSync(SWEEP_LOCK, 'utf8'));
-        if (!Number.isInteger(pid) || pid <= 1) return undefined;
-        // A recycled pid is some other process, so the lock counts only while a sweep holds it.
-        const command = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
-        return getIsSweepCommand(command) ? pid : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
-/** Starts a sweep, or extends the one already running so it also catches a device booting now. */
+/** Starts one bounded background sweep; each boot request gets its own, and overlapping ones are harmless. */
 export function requestSweep(): void {
-    if (getLiveSweepPid() !== undefined) {
-        const now = new Date();
-        utimesSync(SWEEP_LOCK, now, now);
-        return;
-    }
     spawnDetachedMute(['sweep']);
 }
 
@@ -257,40 +263,8 @@ function log(line: string): void {
     process.stdout.write(`${new Date().toISOString()} ${line}\n`);
 }
 
-/** Takes the lock atomically; false when another live sweep holds it, which then covers this request. */
-function getIsSweepLockAcquired(): boolean {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-            writeFileSync(SWEEP_LOCK, String(process.pid), { flag: 'wx' });
-            return true;
-        } catch {
-            if (getLiveSweepPid() !== undefined) return false;
-            rmSync(SWEEP_LOCK, { force: true });
-        }
-    }
-    return false;
-}
-
-function releaseSweepLock(): void {
-    try {
-        if (readFileSync(SWEEP_LOCK, 'utf8') === String(process.pid)) rmSync(SWEEP_LOCK, { force: true });
-    } catch {
-        // Already gone.
-    }
-}
-
 async function runSweep(): Promise<number> {
-    if (!getIsSweepLockAcquired()) {
-        // Another sweep holds the lock: extend it to cover this request.
-        const now = new Date();
-        try {
-            utimesSync(SWEEP_LOCK, now, now);
-        } catch {
-            // It finished in between; the next boot request starts a fresh one.
-        }
-        return 0;
-    }
+    const deadline = Date.now() + SWEEP_WINDOW_MILLISECONDS;
     const settled = new Set<string>();
     const inFlight = new Map<string, Promise<void>>();
     const track = (id: string, job: () => Promise<string>) => {
@@ -309,33 +283,7 @@ async function runSweep(): Promise<number> {
                 .finally(() => inFlight.delete(id)),
         );
     };
-    try {
-        await sweepUntilIdle(settled, inFlight, track);
-    } finally {
-        releaseSweepLock();
-    }
-    return 0;
-}
-
-async function sweepUntilIdle(
-    settled: Set<string>,
-    inFlight: ReadonlyMap<string, Promise<void>>,
-    track: (id: string, job: () => Promise<string>) => void,
-): Promise<void> {
-    let lockTouchedAt = Date.now();
-    for (;;) {
-        try {
-            lockTouchedAt = statSync(SWEEP_LOCK).mtimeMs;
-        } catch {
-            // The lock vanished; finish on the last deadline seen.
-        }
-        const isOpen = Date.now() < getSweepDeadline(lockTouchedAt);
-        if (!isOpen && inFlight.size === 0) return;
-        if (!isOpen) {
-            // Past the deadline only the jobs already running finish; nothing new starts.
-            await Promise.race(inFlight.values());
-            continue;
-        }
+    while (Date.now() < deadline) {
         const booted = await getBootedDevices();
         // A device shut down and booted again comes back at full volume, so it is muted afresh.
         const live = new Set([...booted.simulators, ...booted.emulators]);
@@ -344,6 +292,9 @@ async function sweepUntilIdle(
         for (const serial of booted.emulators) track(serial, () => muteEmulator(serial));
         await sleep(RETRY_MILLISECONDS);
     }
+    // Past the deadline only the jobs already running finish; nothing new starts.
+    await Promise.allSettled(inFlight.values());
+    return 0;
 }
 
 async function main(): Promise<number> {

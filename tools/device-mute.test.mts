@@ -4,14 +4,13 @@ import { test } from 'node:test';
 import {
     getIsDeviceBootCommand,
     getIsMutedReading,
-    getIsSweepCommand,
     getNativeToolPath,
     getStreamVolumeArgs,
-    getSweepDeadline,
     parseBootedSimulatorUdids,
     parseEmulatorSerials,
     parseMuteArgs,
     parseReverseMappings,
+    parseReverseSnapshot,
     parseStreamVolume,
 } from './device-mute.mts';
 
@@ -75,12 +74,11 @@ test('only a clean zero reading counts as muted', () => {
     assert.equal(getIsMutedReading(''), false);
 });
 
-test('a sweep runs five minutes past its last request', () => {
-    assert.equal(getSweepDeadline(1_000), 1_000 + 5 * 60 * 1000);
-});
 
-test('a sweep lock counts only while a sweep holds its pid, not a process that reused it', () => {
-    assert.equal(getIsSweepCommand('/opt/homebrew/bin/node /repo/tools/device-mute.mts sweep\n'), true);
-    assert.equal(getIsSweepCommand('/usr/bin/ssh-agent -l'), false);
-    assert.equal(getIsSweepCommand(''), false);
+
+test('a saved reverse snapshot reads back as pairs, dropping malformed entries', () => {
+    assert.deepEqual(parseReverseSnapshot('[["tcp:8177","tcp:8177"],["tcp:1"],[2,3]]'), [['tcp:8177', 'tcp:8177']]);
+    assert.deepEqual(parseReverseSnapshot('{}'), []);
+    assert.deepEqual(parseReverseSnapshot(''), []);
+    assert.deepEqual(parseReverseSnapshot('[["tcp:8'), []);
 });

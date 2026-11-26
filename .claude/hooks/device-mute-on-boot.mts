@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * device-mute-on-boot: `PostToolUse` on Bash. After a command that may boot a simulator or emulator, starts
- * (or extends) a background sweep that mutes every booted device not yet muted, once it has booted, so no test
+ * a five-minute background sweep that mutes every booted device not yet muted, once it has booted, so no test
  * device plays through the owner's speakers (CLAUDE.md → "Test devices stay muted"). It reads no UDID from the
  * command, so `simctl boot "$UDID"` is covered. Never blocks; fails open and always exits 0.
  */
