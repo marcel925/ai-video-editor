@@ -18,6 +18,7 @@ import {
   parseAdbReverse,
   parseCpuSeconds,
   parseTcpPorts,
+  recentlyLaunchedApp,
   selectStale,
   sessionPidOf,
   type Item,
@@ -727,7 +728,7 @@ test('an orphaned Metro under an npm process title that serves a port goes once 
   assert.equal(noHistory.find((i) => i.rootPid === 30)?.score, 6);
 });
 
-test('an unclaimed simulator idle 20 minutes scores 4; a busy or driven one is kept', () => {
+test('an unclaimed simulator idle 20 minutes scores 4; one in use over the window, busy or driven is kept', () => {
   const procs = [simRoot(60, OTHER_SIM), old(proc(61, 60, 'SpringBoard'))];
   const over = { bootedSims: [{ udid: OTHER_SIM, name: 'iPhone 17 Pro' }] };
   const score = (extra: Partial<Snapshot>, more: Proc[] = []) =>
@@ -735,14 +736,14 @@ test('an unclaimed simulator idle 20 minutes scores 4; a busy or driven one is k
       (i) => i.udid === OTHER_SIM,
     );
   assert.equal(score(cpuOver(procs, { 61: 60 }))?.score, 4);
-  assert.equal(score(cpuOver(procs, { 61: 600 }))?.score, 5);
+  assert.equal(score(cpuOver(procs, { 61: 600 }))?.score, 6);
   assert.equal(score(cpuOver(procs, { 61: 60 }, { cpuPct: new Map([[61, 90]]) }))?.score, 7);
   const capture = { ...proc(70, 69, 'simctl', `xcrun simctl io ${OTHER_SIM} screenshot a.png`) };
   assert.match(score(cpuOver(procs, { 61: 60 }), [capture])?.scoreWhy ?? '', /driven right now by pid 70/);
   const oldShell = old(proc(71, 69, 'zsh', `/bin/zsh -c devSim up --udid ${OTHER_SIM}`));
   assert.equal(score(cpuOver(procs, { 61: 60 }), [oldShell])?.score, 4);
   const mcp = old(proc(72, 1, 'idb_companion', `idb_companion --udid ${OTHER_SIM}`));
-  assert.equal(score(cpuOver([...procs, mcp], { 61: 60, 72: 300 }), [mcp])?.score, 5);
+  assert.equal(score(cpuOver([...procs, mcp], { 61: 60, 72: 300 }), [mcp])?.score, 6);
 });
 
 test('a live session keeps its Metro unless --aggressive finds it idle, its own session included', () => {
@@ -993,4 +994,38 @@ test('emulatorConsolePort reads -port, else the lowest even console port the emu
   assert.equal(emulatorConsolePort('qemu -avd a', new Set([5555, 5554, 8554, 55836])), 5554);
   assert.equal(emulatorConsolePort('qemu -avd a', new Set([8554])), undefined);
   assert.equal(emulatorConsolePort('qemu -avd a', undefined), undefined);
+});
+
+test('a device whose 20-minute average shows use is kept, though it looks idle at this instant', () => {
+  const qemu = old(proc(90, 1, 'qemu-system-aarch64-headless', 'qemu-system-aarch64-headless -avd a -port 5654'));
+  const emulator = classify(snapshot([qemu], cpuOver([qemu], { 90: 624 })), NOW).find((i) => i.rootPid === 90);
+  assert.equal(emulator?.score, 6);
+  assert.match(emulator?.scoreWhy ?? '', /in use: 41\.6% average CPU over 25m/);
+  const procs = [simRoot(60, SIM)];
+  const goneWorktree = classify(
+    snapshot(procs, { liveWorktreeSlugs: new Set(), checkoutTouchedAt: () => undefined, ...cpuOver(procs, { 60: 600 }) }),
+    NOW,
+  ).find((i) => i.udid === SIM);
+  assert.equal(goneWorktree?.score, 6);
+});
+
+test('a simulator whose app was launched inside the idle window is kept, however quiet its CPU', () => {
+  const app = (started: string): Proc => ({
+    ...proc(61, 60, 'Amiora', `/Users/u/Library/Developer/CoreSimulator/Devices/${OTHER_SIM}/data/Containers/Bundle/Application/X/Amiora.app/Amiora`),
+    started,
+  });
+  const score = (started: string) => {
+    const procs = [simRoot(60, OTHER_SIM), app(started)];
+    return classify(
+      snapshot(procs, { bootedSims: [{ udid: OTHER_SIM, name: 'iPhone 17 Pro' }], ...cpuOver(procs, { 61: 30 }) }),
+      NOW,
+      { aggressive: true },
+    ).find((i) => i.udid === OTHER_SIM);
+  };
+  const fresh = score('Tue Nov 10 09:53:00 2026');
+  assert.equal(fresh?.score, 7);
+  assert.match(fresh?.scoreWhy ?? '', /its app was launched 7m ago/);
+  assert.equal(score(OLD)?.score, 4);
+  const byPid = new Map([[61, app(OLD)]]);
+  assert.equal(recentlyLaunchedApp({ category: 'emulators', pids: [61] }, byPid, NOW), undefined);
 });

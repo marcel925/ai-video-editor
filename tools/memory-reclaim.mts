@@ -308,6 +308,26 @@ export function deviceClientOf(item: Item, procs: Proc[], now: number): Proc | u
   return undefined;
 }
 
+const SIM_APP_PATH = /\/data\/Containers\/Bundle\/Application\//;
+
+/**
+ * A simulator app (re)launched inside the idle window means a session is working with the device now, however
+ * quiet its CPU: a capture run relaunches the app and then waits on screenshots and a bundle.
+ */
+export function recentlyLaunchedApp(
+  item: Pick<Item, 'category' | 'pids'>,
+  byPid: Map<number, Proc>,
+  now: number,
+): Proc | undefined {
+  if (item.category !== 'simulators') return undefined;
+  return item.pids
+    .map((pid) => byPid.get(pid))
+    .find(
+      (p): p is Proc =>
+        p !== undefined && SIM_APP_PATH.test(p.args) && now - Date.parse(p.started) < IDLE_WINDOW_MS,
+    );
+}
+
 /** One line of the machine-wide stop log, so the session that owned an item can see who stopped it and why. */
 export function formatStopLogLine(
   item: Item,
@@ -962,9 +982,14 @@ function scoreItem(
       score: 7,
       scoreWhy: `driven right now by pid ${client.pid}: ${client.args.slice(0, 60)}`,
     };
+  const launched = recentlyLaunchedApp(item, byPid, now);
+  if (launched)
+    return {
+      score: 7,
+      scoreWhy: `its app was launched ${Math.round((now - Date.parse(launched.started)) / 60_000)}m ago (pid ${launched.pid})`,
+    };
   const held = scoreByOwnership(item, snap, context);
-  if (held.hold === 'firm' || held.score <= 2 || (held.hold === 'claim' && !context.aggressive))
-    return held;
+  if (held.hold === 'firm' || (held.hold === 'claim' && !context.aggressive)) return held;
   // A claim returns before scoreByOwnership's own CPU checks, so an old idle average never outvotes busy-now.
   if (snap.cpuPct === null) return held;
   const cpuNow = item.pids.reduce((sum, pid) => sum + (snap.cpuPct?.get(pid) ?? 0), 0);
@@ -982,9 +1007,14 @@ function scoreItem(
     now,
     windowMs: isOrphan ? ORPHAN_IDLE_WINDOW_MS : IDLE_WINDOW_MS,
   });
-  if (evidence.state === 'unknown') return held;
-  if (evidence.state === 'active')
-    return { ...held, scoreWhy: `${held.scoreWhy}; ${evidence.avgPct.toFixed(1)}% average CPU over ${Math.round(evidence.windowMs / 60_000)}m` };
+  if (evidence.state === 'active') {
+    // A device driven in bursts (an adb dump, a screenshot) reads idle at any one instant but not over the window.
+    const usage = `${evidence.avgPct.toFixed(1)}% average CPU over ${Math.round(evidence.windowMs / 60_000)}m`;
+    return held.score >= 6
+      ? { ...held, scoreWhy: `${held.scoreWhy}; ${usage}` }
+      : { score: 6, scoreWhy: `in use: ${usage}` };
+  }
+  if (evidence.state === 'unknown' || held.score <= 2) return held;
   if (isOrphan) return { score: 2, scoreWhy: `orphaned and ${idleText(evidence)}` };
   if (held.hold === 'claim')
     return { score: 5, scoreWhy: `${idleText(evidence)}, though ${held.scoreWhy}` };
